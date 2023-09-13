@@ -1,7 +1,15 @@
 [package]
-name = "tetris"
+name = "tetris-tui"
 version = "0.1.0"
 edition = "2021"
+authors = ["Quan Tong <quantonganh@email.com>"]
+license = "MIT OR Apache-2.0"
+description = "Tetris in the terminal"
+readme = "README.md"
+homepage = "https://github.com/quantonganh/tetris-tui"
+repository = "https://github.com/quantonganh/tetris-tui"
+keywords = ["tetris", "cli", "terminal"]
+categories = ["command-line-game"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
