@@ -367,7 +367,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tetris"
+name = "tetris-tui"
 version = "0.1.0"
 dependencies = [
  "crossterm",
