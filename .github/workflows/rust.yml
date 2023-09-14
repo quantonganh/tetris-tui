@@ -60,6 +60,10 @@ jobs:
       run: |
         cargo install cross --git https://github.com/cross-rs/cross.git --rev 47df5c76e7cba682823a0b6aa6d95c17b31ba63a
 
+    - name: Install AArch64 target toolchain
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: sudo apt-get install -y gcc-aarch64-linux-gnu
+
     - name: Build release binary
       run: |
         cargo build --release --locked --target ${{ matrix.target }}
