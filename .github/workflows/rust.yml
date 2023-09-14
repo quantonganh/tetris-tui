@@ -18,3 +18,11 @@ jobs:
       run: cargo login ${{ secrets.CRATES_IO_API_TOKEN }}
     - name: Publish
       run: cargo publish
+    - name: Run GoReleaser
+      uses: goreleaser/goreleaser-action@v4
+      with:
+        distribution: goreleaser
+        version: latest
+        args: release --clean
+      env:
+        GITHUB_TOKEN: ${{ secrets.GH_PAT }}
