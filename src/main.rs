@@ -123,7 +123,6 @@ impl Clone for Tetromino {
 }
 
 struct Player {
-    name: String,
     score: u64,
 }
 
@@ -414,7 +413,6 @@ impl Game {
                             params![],
                             |row| {
                                 Ok(Player {
-                                    name: row.get(0)?,
                                     score: row.get(1)?,
                                 })
                             },
@@ -1186,7 +1184,7 @@ fn open(home_dir: &Path) -> Result<Connection, rusqlite::Error> {
     Ok(conn)
 }
 
-fn print_message(stdout: &mut io::Stdout, grid_width: u16, grid_height: u16, n: u16, msg: String) {
+fn print_message(stdout: &mut io::Stdout, _grid_width: u16, grid_height: u16, n: u16, msg: String) {
     let (term_width, term_height) = terminal::size().unwrap();
     let start_x = (term_width - msg.len() as u16) / 2;
     let start_y = (term_height - grid_height) / 2;
