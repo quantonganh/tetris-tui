@@ -1,6 +1,6 @@
 [package]
 name = "tetris-tui"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = ["Quan Tong <quantonganh@email.com>"]
 license = "MIT OR Apache-2.0"
@@ -16,5 +16,8 @@ categories = ["command-line-game"]
 [dependencies]
 crossterm = "0.26"
 rand = "0.8.5"
-rusqlite = "0.29"
+rusqlite = { version = "0.29.0", features = ["bundled"] }
 dirs = "5.0"
+
+[profile.release]
+strip = "debuginfo"

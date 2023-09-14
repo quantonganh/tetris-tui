@@ -7,22 +7,75 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [x86_64-linux, x86_64-macos, x86_64-windows]
+        include:
+        - build: x86_64-macos
+          os: macos-latest
+          rust: stable
+          target: x86_64-apple-darwin
+          cross: false
+        - build: aarch64-macos
+          os: macos-latest
+          rust: stable
+          target: aarch64-apple-darwin
+          cross: false
+          skip_tests: true
+        - build: x86_64-linux
+          os: ubuntu-latest
+          rust: stable
+          target: x86_64-unknown-linux-gnu
+          cross: false
+        - build: aarch64-linux
+          os: ubuntu-latest
+          rust: stable
+          target: aarch64-unknown-linux-gnu
+          cross: true
+        - build: x86_64-windows
+          os: windows-latest
+          rust: stable
+          target: x86_64-pc-windows-msvc
+          cross: false
 
     steps:
-    - uses: actions/checkout@v3
-    - name: Login
-      run: cargo login ${{ secrets.CRATES_IO_API_TOKEN }}
-    - name: Publish
-      run: cargo publish
-    - name: Run GoReleaser
-      uses: goreleaser/goreleaser-action@v4
+    - uses: actions/checkout@v4
+
+    - name: Install ${{ matrix.rust }} toolchain
+      uses: dtolnay/rust-toolchain@master
       with:
-        distribution: goreleaser
-        version: latest
-        args: release --clean
+        toolchain: ${{ matrix.rust }}
+        target: ${{ matrix.target }}
+
+    - name: Install Cross
+      if: "matrix.cross"
+      run: |
+        cargo install cross --git https://github.com/cross-rs/cross.git --rev 47df5c76e7cba682823a0b6aa6d95c17b31ba63a
+
+    - name: Build release binary
+      run: |
+        cargo build --release --locked --target ${{ matrix.target }}
+
+    - name: Package
+      shell: bash
+      run: |
+        cd target/${{ matrix.target }}/release          
+        tar czvf ../../../tetris-tui-${{ matrix.target }}.tar.gz tetris-tui
+        cd -
+
+    - name: Create GitHub Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: tetris-tui*
+        name: Release ${{ matrix.target }}
       env:
-        GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
