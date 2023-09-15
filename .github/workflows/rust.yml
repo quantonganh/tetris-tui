@@ -79,7 +79,7 @@ jobs:
       id: create_release
       uses: softprops/action-gh-release@v1
       with:
-        files: tetris-tui*
+        files: tetris-tui-*
         name: Release ${{ matrix.target }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

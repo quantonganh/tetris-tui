@@ -1,7 +1,10 @@
+use core::fmt;
+use crossterm::cursor::{MoveLeft, MoveRight};
 use rand::Rng;
+use std::error::Error;
 use std::io::{self, Write};
-use std::path::Path;
 use std::time::{Duration, Instant};
+use std::{fs, result};
 
 use crossterm::{
     cursor::{self, MoveTo},
@@ -13,7 +16,7 @@ use crossterm::{
 };
 
 use dirs;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, Result as RusqliteResult};
 
 const PLAY_WIDTH: usize = 10;
 const PLAY_HEIGHT: usize = 20;
@@ -131,6 +134,29 @@ const HIGH_SCORES_MESSAGE: &str = "HIGH SCORES";
 const RESTART_MESSAGE: &str = "(R)estart | (Q)uit";
 const PAUSED_MESSAGE: &str = "PAUSED";
 const CONTINUE_MESSAGE: &str = "(C)ontinue | (Q)uit";
+
+#[derive(Debug)]
+struct GameError {
+    message: String,
+}
+
+impl GameError {
+    fn new(message: &str) -> Self {
+        GameError {
+            message: message.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for GameError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl Error for GameError {}
+
+type Result<T> = result::Result<T, Box<dyn Error>>;
 
 struct Game {
     play_grid: Vec<Vec<Cell>>,
@@ -303,11 +329,9 @@ impl Game {
         .unwrap();
     }
 
-    fn handle_event(&mut self, stdout: &mut std::io::Stdout) {
+    fn handle_event(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
         let mut drop_timer = Instant::now();
         let mut soft_drop_timer = Instant::now();
-        let mut name = String::new();
-        let mut cursor_position: usize = 0;
 
         loop {
             if self.paused {
@@ -340,8 +364,8 @@ impl Game {
                     drop_timer = Instant::now();
                 }
 
-                if poll(Duration::from_millis(10)).unwrap() {
-                    let event = read().unwrap();
+                if poll(Duration::from_millis(10))? {
+                    let event = read()?;
                     match event {
                         Event::Key(KeyEvent {
                             code,
@@ -394,7 +418,7 @@ impl Game {
                                     self.paused = !self.paused;
                                 }
                                 KeyCode::Char('q') => {
-                                    stdout.execute(Clear(ClearType::All)).unwrap();
+                                    stdout.execute(Clear(ClearType::All))?;
                                     std::process::exit(0);
                                 }
                                 _ => {}
@@ -406,124 +430,28 @@ impl Game {
                 }
 
                 if self.is_game_over() {
-                    let player: Player = self
-                        .conn
-                        .query_row(
-                            "SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 4,1",
-                            params![],
-                            |row| {
-                                Ok(Player {
-                                    score: row.get(1)?,
-                                })
-                            },
-                        )
-                        .unwrap();
-
-                    if (self.score as u64) <= player.score {
-                        self.show_high_scores(stdout);
+                    if self.score == 0 {
+                        self.show_high_scores(stdout)?;
                     } else {
-                        let new_high_score_grid = create_grid(PLAY_WIDTH + 2, 4);
+                        let count: i64 = self.conn.query_row(
+                            "SELECT COUNT(*) FROM high_scores",
+                            params![],
+                            |row| row.get(0),
+                        )?;
 
-                        for (y, row) in new_high_score_grid.iter().enumerate() {
-                            for (x, &ref cell) in row.iter().enumerate() {
-                                let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16
-                                    - BLOCK_WIDTH as u16;
-                                let screen_y = self.start_y + y as u16 + 8;
-                                self.render_cell(stdout, screen_x, screen_y, cell.clone());
-                            }
-                        }
+                        if count < 5 {
+                            self.new_high_score(stdout)?;
+                        } else {
+                            let player: Player = self.conn.query_row(
+                                "SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 4,1",
+                                params![],
+                                |row| Ok(Player { score: row.get(1)? }),
+                            )?;
 
-                        print_message(
-                            stdout,
-                            PLAY_WIDTH as u16,
-                            4,
-                            0,
-                            String::from("NEW HIGH SCORE!"),
-                        );
-                        print_message(stdout, PLAY_WIDTH as u16, 4, 1, format!("{}", self.score));
-
-                        loop {
-                            stdout
-                                .write(format!("Enter your name: {}", name).as_bytes())
-                                .unwrap();
-                            stdout.flush().unwrap();
-
-                            let (_, term_height) = terminal::size().unwrap();
-                            stdout
-                                .execute(MoveTo(
-                                    self.start_x + BLOCK_WIDTH as u16 + 1,
-                                    (term_height - 3) / 2 + 2,
-                                ))
-                                .unwrap();
-
-                            if poll(Duration::from_millis(10)).unwrap() {
-                                let event = read().unwrap();
-                                match event {
-                                    Event::Key(KeyEvent {
-                                        code,
-                                        state: _,
-                                        kind: _,
-                                        modifiers: _,
-                                    }) => match code {
-                                        KeyCode::Backspace => {
-                                            // Handle Backspace key to remove characters.
-                                            if !name.is_empty() && cursor_position > 0 {
-                                                name.remove(cursor_position - 1);
-                                                cursor_position -= 1;
-                                            }
-                                        }
-                                        KeyCode::Enter => {
-                                            self.conn.execute(
-                                        "INSERT INTO high_scores (player_name, score) VALUES (?1, ?2)",
-                                        params![name, self.score],
-                                    ).unwrap();
-
-                                            self.show_high_scores(stdout);
-
-                                            break;
-                                        }
-                                        KeyCode::Left => {
-                                            // Move the cursor left.
-                                            if cursor_position > 0 {
-                                                cursor_position -= 1;
-                                            }
-                                        }
-                                        KeyCode::Right => {
-                                            // Move the cursor right.
-                                            if cursor_position < name.len() {
-                                                cursor_position += 1;
-                                            }
-                                        }
-                                        KeyCode::Char(c) => {
-                                            name.insert(cursor_position, c);
-                                            cursor_position += 1;
-                                        }
-                                        _ => {}
-                                    },
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-
-                    loop {
-                        if let Ok(event) = read() {
-                            match event {
-                                Event::Key(KeyEvent {
-                                    code,
-                                    modifiers: _,
-                                    kind: _,
-                                    state: _,
-                                }) => {
-                                    if code == KeyCode::Char('q') {
-                                        stdout.execute(Clear(ClearType::All)).unwrap();
-                                        std::process::exit(0);
-                                    } else if code == KeyCode::Char('r') {
-                                        self.reset_game();
-                                        break;
-                                    }
-                                }
-                                _ => {}
+                            if (self.score as u64) <= player.score {
+                                self.show_high_scores(stdout)?;
+                            } else {
+                                self.new_high_score(stdout)?;
                             }
                         }
                     }
@@ -545,21 +473,15 @@ impl Game {
 
         execute!(
             stdout,
+            SetForegroundColor(Color::White),
+            SetBackgroundColor(Color::Black),
             MoveTo(
                 self.start_x
                     + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16 - PAUSED_MESSAGE.len() as u16)
                         / 2,
                 self.start_y + 10
             ),
-            SetForegroundColor(Color::White),
-            SetBackgroundColor(Color::Black),
             Print(PAUSED_MESSAGE),
-            ResetColor
-        )
-        .unwrap();
-
-        execute!(
-            stdout,
             MoveTo(
                 self.start_x
                     + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
@@ -567,8 +489,6 @@ impl Game {
                         / 2,
                 self.start_y + 11
             ),
-            SetForegroundColor(Color::White),
-            SetBackgroundColor(Color::Black),
             Print(CONTINUE_MESSAGE),
             ResetColor
         )
@@ -792,7 +712,7 @@ impl Game {
         false
     }
 
-    fn show_high_scores(&self, stdout: &mut io::Stdout) {
+    fn show_high_scores(&mut self, stdout: &mut io::Stdout) -> Result<()> {
         let game_over_grid = create_grid(PLAY_WIDTH + 2, PLAY_WIDTH);
         let game_over_start_row = 5;
 
@@ -817,8 +737,7 @@ impl Game {
             SetBackgroundColor(Color::Black),
             Print(GAME_OVER_MESSAGE),
             ResetColor
-        )
-        .unwrap();
+        )?;
 
         let high_scores_grid = create_grid(PLAY_WIDTH, 6);
 
@@ -843,18 +762,14 @@ impl Game {
             SetBackgroundColor(Color::Black),
             Print(HIGH_SCORES_MESSAGE),
             ResetColor
-        )
-        .unwrap();
+        )?;
 
         let mut stmt = self
             .conn
-            .prepare("SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 5")
-            .unwrap();
-        let players = stmt
-            .query_map([], |row| {
-                Ok((row.get_unwrap::<_, String>(0), row.get_unwrap::<_, i64>(1)))
-            })
-            .unwrap();
+            .prepare("SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 5")?;
+        let players = stmt.query_map([], |row| {
+            Ok((row.get_unwrap::<_, String>(0), row.get_unwrap::<_, i64>(1)))
+        })?;
 
         for (index, player) in players.enumerate() {
             let (name, score) = player.unwrap();
@@ -869,8 +784,7 @@ impl Game {
                 SetBackgroundColor(Color::Black),
                 Print(format!("{:<15}{:>9}", name, score)),
                 ResetColor
-            )
-            .unwrap();
+            )?;
         }
 
         execute!(
@@ -885,21 +799,146 @@ impl Game {
             SetBackgroundColor(Color::Black),
             Print(RESTART_MESSAGE),
             ResetColor
-        )
-        .unwrap();
+        )?;
+
+        loop {
+            if poll(Duration::from_millis(10))? {
+                let event = read()?;
+                match event {
+                    Event::Key(KeyEvent {
+                        code,
+                        modifiers: _,
+                        kind: _,
+                        state: _,
+                    }) => match code {
+                        KeyCode::Char('q') => {
+                            stdout.execute(Clear(ClearType::All))?;
+                            std::process::exit(0);
+                        }
+                        KeyCode::Char('r') => {
+                            reset_game()?;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        }
     }
 
-    fn reset_game(&mut self) {
-        let home_dir = dirs::home_dir().unwrap();
+    fn new_high_score(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
+        let new_high_score_grid = create_grid(PLAY_WIDTH + 2, 4);
 
-        let conn = open(&home_dir).unwrap();
+        for (y, row) in new_high_score_grid.iter().enumerate() {
+            for (x, &ref cell) in row.iter().enumerate() {
+                let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16 - BLOCK_WIDTH as u16;
+                let screen_y = self.start_y + y as u16 + 8;
+                self.render_cell(stdout, screen_x, screen_y, cell.clone());
+            }
+        }
 
-        let mut game = Game::new(conn);
-        let mut stdout = io::stdout();
+        print_message(
+            stdout,
+            PLAY_WIDTH as u16,
+            4,
+            0,
+            String::from("NEW HIGH SCORE!"),
+        );
+        print_message(stdout, PLAY_WIDTH as u16, 4, 1, format!("{}", self.score));
 
-        game.render(&mut stdout);
-        game.handle_event(&mut stdout);
+        let mut name = String::new();
+        let mut cursor_position: usize = 0;
+
+        let (_, term_height) = terminal::size()?;
+        stdout.execute(MoveTo(
+            self.start_x + BLOCK_WIDTH as u16 + 1,
+            (term_height - 3) / 2 + 2,
+        ))?;
+        stdout.write(format!("Enter your name: {}", name).as_bytes())?;
+        stdout.execute(cursor::Show)?;
+        stdout.flush()?;
+
+        loop {
+            if poll(Duration::from_millis(10))? {
+                let event = read()?;
+                match event {
+                    Event::Key(KeyEvent {
+                        code,
+                        state: _,
+                        kind: _,
+                        modifiers: _,
+                    }) => {
+                        match code {
+                            KeyCode::Backspace => {
+                                // Handle Backspace key to remove characters.
+                                if !name.is_empty() && cursor_position > 0 {
+                                    name.remove(cursor_position - 1);
+                                    cursor_position -= 1;
+
+                                    stdout.execute(MoveLeft(1))?;
+                                    stdout.write(b" ")?;
+                                    stdout.flush()?;
+                                    print!("{}", &name[cursor_position..]);
+                                    stdout.execute(MoveLeft(name.len() as u16 - cursor_position as u16 + 1))?;
+                                    stdout.flush()?;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                self.conn.execute(
+                                    "INSERT INTO high_scores (player_name, score) VALUES (?1, ?2)",
+                                    params![name, self.score],
+                                )?;
+
+                                execute!(stdout.lock(), cursor::Hide)?;
+                                self.show_high_scores(stdout)?;
+                            }
+                            KeyCode::Left => {
+                                // Move the cursor left.
+                                if cursor_position > 0 {
+                                    stdout.execute(MoveLeft(1))?;
+                                    cursor_position -= 1;
+                                }
+                            }
+                            KeyCode::Right => {
+                                // Move the cursor right.
+                                if cursor_position < name.len() {
+                                    stdout.execute(MoveRight(1))?;
+                                    cursor_position += 1;
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                name.insert(cursor_position, c);
+                                cursor_position += 1;
+                                print!("{}", &name[cursor_position - 1..]);
+                                stdout.flush()?;
+                                for _ in cursor_position..name.len() {
+                                    stdout.execute(MoveLeft(1))?;
+                                }
+                                stdout.flush()?;
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
+}
+
+fn reset_game() -> Result<()> {
+    let conn = open()?;
+    let mut game = Game::new(conn);
+
+    let mut stdout = std::io::stdout();
+    game.render(&mut stdout);
+
+    match game.handle_event(&mut stdout) {
+        Ok(_) => {},
+        Err(err) => eprintln!("Error: {}", err),
+    }
+
+    Ok(())
 }
 
 fn create_grid(width: usize, height: usize) -> Vec<Vec<Cell>> {
@@ -1121,38 +1160,10 @@ fn tetromino_width(tetromino: &Vec<Vec<Cell>>) -> usize {
     max_width
 }
 
-struct CleanupGuard;
-
-impl Drop for CleanupGuard {
-    fn drop(&mut self) {
-        execute!(io::stdout(), cursor::Show).unwrap();
-        terminal::disable_raw_mode().unwrap();
-    }
-}
-
-fn main() -> io::Result<()> {
-    let home_dir = match dirs::home_dir() {
-        Some(path) => path,
-        None => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Failed to get the user's home directory.",
-            ))
-        }
-    };
-
-    let conn = match open(&home_dir) {
-        Ok(conn) => conn,
-        Err(sqlite_err) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("SQLite error: {}", sqlite_err),
-            ));
-        }
-    };
+fn main() -> Result<()> {
+    let conn = open()?;
 
     terminal::enable_raw_mode()?;
-    let _cleanup_guard = CleanupGuard;
 
     let mut game = Game::new(conn);
     let mut stdout = io::stdout();
@@ -1161,15 +1172,34 @@ fn main() -> io::Result<()> {
 
     game.render(&mut stdout);
 
-    loop {
-        if !game.paused {
-            game.handle_event(&mut stdout);
-        }
+    match game.handle_event(&mut stdout) {
+        Ok(_) => {},
+        Err(err) => eprintln!("Error: {}", err),
     }
+
+    execute!(io::stdout(), cursor::Show)?;
+    terminal::disable_raw_mode()?;
+
+    Ok(())
 }
 
-fn open(home_dir: &Path) -> Result<Connection, rusqlite::Error> {
-    let db_path = home_dir.join(".tetris").join("high_scores.db");
+fn open() -> RusqliteResult<Connection, Box<dyn Error>> {
+    let home_dir = match dirs::home_dir() {
+        Some(path) => path,
+        None => {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to get the user's home directory.",
+            )));
+        }
+    };
+
+    let db_dir = home_dir.join(".tetris");
+    if let Err(err) = fs::create_dir_all(db_dir.clone()) {
+        return Err(Box::new(err));
+    }
+
+    let db_path = db_dir.join("high_scores.db");
     let conn = Connection::open(&db_path)?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS high_scores (
