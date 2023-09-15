@@ -327,7 +327,7 @@ impl Game {
 
         loop {
             if self.paused {
-                self.handle_pause_event(stdout);
+                self.handle_pause_event(stdout)?;
             } else {
                 if self.level <= MAX_LEVEL as u32
                     && self.lines >= LINES_PER_LEVEL as u32 * (self.level + 1)
@@ -410,8 +410,7 @@ impl Game {
                                     self.paused = !self.paused;
                                 }
                                 KeyCode::Char('q') => {
-                                    stdout.execute(Clear(ClearType::All))?;
-                                    std::process::exit(0);
+                                    quit(stdout)?;
                                 }
                                 _ => {}
                             }
@@ -452,7 +451,7 @@ impl Game {
         }
     }
 
-    fn handle_pause_event(&mut self, stdout: &mut io::Stdout) {
+    fn handle_pause_event(&mut self, stdout: &mut io::Stdout) -> Result<()> {
         let paused_grid = create_grid(8, 2);
 
         for (y, row) in paused_grid.iter().enumerate() {
@@ -486,25 +485,27 @@ impl Game {
         )
         .unwrap();
 
-        if let Ok(event) = read() {
-            match event {
-                Event::Key(KeyEvent {
-                    code,
-                    modifiers: _,
-                    kind: _,
-                    state: _,
-                }) => match code {
-                    KeyCode::Enter | KeyCode::Char('c') => {
-                        self.render(stdout);
-                        self.paused = false;
-                    }
-                    KeyCode::Char('q') => {
-                        stdout.execute(Clear(ClearType::All)).unwrap();
-                        std::process::exit(0);
-                    }
+        loop {
+            if poll(Duration::from_millis(10))? {
+                let event = read()?;
+                match event {
+                    Event::Key(KeyEvent {
+                        code,
+                        modifiers: _,
+                        kind: _,
+                        state: _,
+                    }) => match code {
+                        KeyCode::Enter | KeyCode::Char('c') => {
+                            self.render(stdout);
+                            self.paused = false;
+                        }
+                        KeyCode::Char('q') => {
+                            quit(stdout)?;
+                        }
+                        _ => {}
+                    },
                     _ => {}
-                },
-                _ => {}
+                }
             }
         }
     }
@@ -804,8 +805,7 @@ impl Game {
                         state: _,
                     }) => match code {
                         KeyCode::Char('q') => {
-                            stdout.execute(Clear(ClearType::All))?;
-                            std::process::exit(0);
+                            quit(stdout)?;
                         }
                         KeyCode::Char('r') => {
                             reset_game()?;
@@ -871,7 +871,9 @@ impl Game {
                                     stdout.write(b" ")?;
                                     stdout.flush()?;
                                     print!("{}", &name[cursor_position..]);
-                                    stdout.execute(MoveLeft(name.len() as u16 - cursor_position as u16 + 1))?;
+                                    stdout.execute(MoveLeft(
+                                        name.len() as u16 - cursor_position as u16 + 1,
+                                    ))?;
                                     stdout.flush()?;
                                 }
                             }
@@ -926,11 +928,17 @@ fn reset_game() -> Result<()> {
     game.render(&mut stdout);
 
     match game.handle_event(&mut stdout) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(err) => eprintln!("Error: {}", err),
     }
 
     Ok(())
+}
+
+fn quit(stdout: &mut io::Stdout) -> Result<()> {
+    execute!(stdout, Clear(ClearType::All))?;
+    execute!(stdout, cursor::Show)?;
+    std::process::exit(0);
 }
 
 fn create_grid(width: usize, height: usize) -> Vec<Vec<Cell>> {
@@ -1165,7 +1173,7 @@ fn main() -> Result<()> {
     game.render(&mut stdout);
 
     match game.handle_event(&mut stdout) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(err) => eprintln!("Error: {}", err),
     }
 
