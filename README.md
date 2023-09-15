@@ -10,3 +10,9 @@ Tetris in the terminal
 ```
 $ cargo install tetris-tui
 ```
+
+### Install on NetBSD
+
+```
+# pkgin install tetris-tui
+```
