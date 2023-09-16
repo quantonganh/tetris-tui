@@ -135,6 +135,8 @@ const RESTART_MESSAGE: &str = "(R)estart | (Q)uit";
 const PAUSED_MESSAGE: &str = "PAUSED";
 const CONTINUE_MESSAGE: &str = "(C)ontinue | (Q)uit";
 
+const MAX_LENGTH_NAME: usize = 12;
+
 #[derive(Debug)]
 struct GameError {
     message: String,
@@ -775,7 +777,12 @@ impl Game {
                 ),
                 SetForegroundColor(Color::White),
                 SetBackgroundColor(Color::Black),
-                Print(format!("{:<15}{:>9}", name, score)),
+                Print(format!(
+                    "{:<width$}{:>9}",
+                    name,
+                    score,
+                    width = MAX_LENGTH_NAME + 3
+                )),
                 ResetColor
             )?;
         }
@@ -901,14 +908,16 @@ impl Game {
                                 }
                             }
                             KeyCode::Char(c) => {
-                                name.insert(cursor_position, c);
-                                cursor_position += 1;
-                                print!("{}", &name[cursor_position - 1..]);
-                                stdout.flush()?;
-                                for _ in cursor_position..name.len() {
-                                    stdout.execute(MoveLeft(1))?;
+                                if name.len() <= MAX_LENGTH_NAME {
+                                    name.insert(cursor_position, c);
+                                    cursor_position += 1;
+                                    print!("{}", &name[cursor_position - 1..]);
+                                    stdout.flush()?;
+                                    for _ in cursor_position..name.len() {
+                                        stdout.execute(MoveLeft(1))?;
+                                    }
+                                    stdout.flush()?;
                                 }
-                                stdout.flush()?;
                             }
                             _ => {}
                         }
