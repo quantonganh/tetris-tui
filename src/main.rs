@@ -947,6 +947,7 @@ fn reset_game() -> Result<()> {
 fn quit(stdout: &mut io::Stdout) -> Result<()> {
     execute!(stdout, Clear(ClearType::All))?;
     execute!(stdout, cursor::Show)?;
+    terminal::disable_raw_mode()?;
     std::process::exit(0);
 }
 
