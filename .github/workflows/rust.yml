@@ -78,7 +78,11 @@ jobs:
       shell: bash
       run: |
         cd target/${{ matrix.target }}/release          
-        tar czvf ../../../tetris-tui-${{ matrix.target }}.tar.gz tetris-tui
+        if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+          7z a ../../../tetris-tui-${{ github.ref_name }}-${{ matrix.target }}.zip tetris-tui.exe
+        else
+          tar czvf ../../../tetris-tui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz tetris-tui
+        fi
         cd -
 
     - name: Create GitHub Release
