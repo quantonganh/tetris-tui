@@ -500,6 +500,7 @@ impl Game {
                         KeyCode::Enter | KeyCode::Char('c') => {
                             self.render(stdout);
                             self.paused = false;
+                            break;
                         }
                         KeyCode::Char('q') => {
                             quit(stdout)?;
@@ -510,6 +511,8 @@ impl Game {
                 }
             }
         }
+
+        Ok(())
     }
 
     fn can_move(&mut self, tetromino: &Tetromino, new_row: i16, new_col: i16) -> bool {
