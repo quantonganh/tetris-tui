@@ -1,7 +1,7 @@
 # tetris-tui
 Tetris in the terminal
 
-![Play tetris in the terminal](./tetris-tui.gif)
+![Play tetris in 2-player mode](./tetris-2-player.gif)
 
 ## Installation
 
