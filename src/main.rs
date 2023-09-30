@@ -17,6 +17,14 @@ use crossterm::{
 
 use dirs;
 use rusqlite::{params, Connection, Result as RusqliteResult};
+use std::io::Read;
+use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Barrier};
+use std::thread;
+
+use clap::Parser;
+use local_ip_address::local_ip;
 
 const PLAY_WIDTH: usize = 10;
 const PLAY_HEIGHT: usize = 20;
@@ -131,11 +139,14 @@ struct Player {
 
 const GAME_OVER_MESSAGE: &str = "GAME OVER";
 const HIGH_SCORES_MESSAGE: &str = "HIGH SCORES";
-const RESTART_MESSAGE: &str = "(R)estart | (Q)uit";
+const RESTART_COMMAND: &str = "(R)estart | (Q)uit";
 const PAUSED_MESSAGE: &str = "PAUSED";
-const CONTINUE_MESSAGE: &str = "(C)ontinue | (Q)uit";
+const CONTINUE_COMMAND: &str = "(C)ontinue | (Q)uit";
 
 const MAX_LENGTH_NAME: usize = 12;
+
+const YOU_WIN_MESSAGE: &str = "YOU WIN!";
+const RESTART_CONTINUE_COMMAND: &str = "(R)estart | (C)ontinue | (Q)uit";
 
 #[derive(Debug)]
 struct GameError {
@@ -165,10 +176,16 @@ struct Game {
     drop_interval: u64,
     conn: Connection,
     paused: bool,
+    stream: Option<TcpStream>,
+    receiver: Option<Receiver<MessageType>>,
 }
 
 impl Game {
-    fn new(conn: Connection) -> Self {
+    fn new(
+        conn: Connection,
+        stream: Option<TcpStream>,
+        receiver: Option<Receiver<MessageType>>,
+    ) -> Self {
         let (term_width, term_height) = terminal::size().unwrap();
         let grid_width = (PLAY_WIDTH + 2) * BLOCK_WIDTH;
         let grid_height = PLAY_HEIGHT + 2;
@@ -194,7 +211,51 @@ impl Game {
             drop_interval: 500,
             conn,
             paused: false,
+            stream,
+            receiver,
         }
+    }
+
+    fn start(&mut self) {
+        terminal::enable_raw_mode().unwrap();
+
+        let mut stdout = io::stdout();
+
+        execute!(stdout.lock(), cursor::Hide).unwrap();
+
+        self.render(&mut stdout);
+
+        match self.handle_event(&mut stdout) {
+            Ok(_) => {}
+            Err(err) => eprintln!("Error: {}", err),
+        }
+
+        execute!(io::stdout(), cursor::Show).unwrap();
+        terminal::disable_raw_mode().unwrap();
+    }
+
+    fn reset(&mut self) {
+        // Reset play and preview grids
+        self.play_grid = create_grid(PLAY_WIDTH, PLAY_HEIGHT);
+        self.preview_grid = create_grid(PREVIEW_WIDTH, PREVIEW_HEIGHT);
+
+        // Reset tetrominos
+        self.current_tetromino = Tetromino::new(false);
+        self.next_tetromino = Tetromino::new(true);
+
+        // Reset game statistics
+        self.lines = 0;
+        self.level = 0;
+        self.score = 0;
+        self.drop_interval = 500;
+
+        // Clear any existing messages in the receiver
+        if let Some(ref mut receiver) = self.receiver {
+            while let Ok(_) = receiver.try_recv() {}
+        }
+
+        // Resume the game
+        self.paused = false;
     }
 
     fn render(&self, stdout: &mut std::io::Stdout) {
@@ -204,7 +265,7 @@ impl Game {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16;
                 let screen_y = self.start_y + y as u16;
-                self.render_cell(stdout, screen_x, screen_y, cell.clone());
+                render_cell(stdout, screen_x, screen_y, cell.clone());
             }
         }
 
@@ -212,7 +273,7 @@ impl Game {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + (x + PLAY_WIDTH + 3) as u16 * BLOCK_WIDTH as u16;
                 let screen_y = self.start_y + y as u16;
-                self.render_cell(stdout, screen_x, screen_y, cell.clone());
+                render_cell(stdout, screen_x, screen_y, cell.clone());
             }
         }
 
@@ -220,7 +281,7 @@ impl Game {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + (x + PLAY_WIDTH + 3) as u16 * BLOCK_WIDTH as u16;
                 let screen_y = self.start_y + y as u16 + 8;
-                self.render_cell(stdout, screen_x, screen_y, cell.clone());
+                render_cell(stdout, screen_x, screen_y, cell.clone());
             }
         }
 
@@ -228,7 +289,7 @@ impl Game {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + (x + PLAY_WIDTH + 3) as u16 * BLOCK_WIDTH as u16;
                 let screen_y = self.start_y + y as u16 + 14;
-                self.render_cell(stdout, screen_x, screen_y, cell.clone());
+                render_cell(stdout, screen_x, screen_y, cell.clone());
             }
         }
 
@@ -311,26 +372,113 @@ impl Game {
         .unwrap();
     }
 
-    fn render_cell(&self, stdout: &mut std::io::Stdout, x: u16, y: u16, cell: Cell) {
-        execute!(
-            stdout,
-            MoveTo(x, y),
-            SetForegroundColor(cell.color),
-            SetBackgroundColor(Color::Black),
-            Print(cell.symbols),
-            ResetColor
-        )
-        .unwrap();
-    }
-
     fn handle_event(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
         let mut drop_timer = Instant::now();
         let mut soft_drop_timer = Instant::now();
 
+        let mut reset_needed = false;
         loop {
             if self.paused {
                 self.handle_pause_event(stdout)?;
             } else {
+                if let Some(receiver) = &self.receiver {
+                    for message in receiver.try_iter() {
+                        match message {
+                            MessageType::ClearedRows(rows) => {
+                                let cells =
+                                    vec![I_CELL, O_CELL, T_CELL, S_CELL, Z_CELL, T_CELL, L_CELL];
+                                let mut rng = rand::thread_rng();
+                                let random_cell_index = rng.gen_range(0..cells.len());
+                                let random_cell = cells[random_cell_index].clone();
+
+                                let mut new_row = vec![LEFT_BORDER_CELL; 1]
+                                    .into_iter()
+                                    .chain(vec![random_cell; PLAY_WIDTH])
+                                    .into_iter()
+                                    .chain(vec![RIGHT_BORDER_CELL; 1].into_iter())
+                                    .collect::<Vec<Cell>>();
+                                let random_column = rng.gen_range(1..=PLAY_WIDTH);
+                                new_row[random_column] = EMPTY_CELL;
+
+                                for _ in 0..rows {
+                                    self.play_grid.remove(1);
+                                    self.play_grid.insert(PLAY_HEIGHT, new_row.clone());
+                                }
+
+                                self.render(stdout);
+                            }
+                            MessageType::Notification(msg) => {
+                                self.paused = !self.paused;
+
+                                for (y, row) in create_grid(12, 2).iter().enumerate() {
+                                    for (x, &ref cell) in row.iter().enumerate() {
+                                        let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16
+                                            - BLOCK_WIDTH as u16;
+                                        let screen_y = self.start_y + y as u16 + 9;
+                                        render_cell(stdout, screen_x, screen_y, cell.clone());
+                                    }
+                                }
+
+                                execute!(
+                                    stdout,
+                                    SetForegroundColor(Color::White),
+                                    SetBackgroundColor(Color::Black),
+                                    MoveTo(
+                                        self.start_x
+                                            + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
+                                                - msg.len() as u16)
+                                                / 2,
+                                        self.start_y + 10
+                                    ),
+                                    Print(msg),
+                                    MoveTo(
+                                        self.start_x
+                                            + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
+                                                - RESTART_CONTINUE_COMMAND.len() as u16)
+                                                / 2,
+                                        self.start_y + 11
+                                    ),
+                                    Print(RESTART_CONTINUE_COMMAND),
+                                    ResetColor
+                                )?;
+
+                                loop {
+                                    if poll(Duration::from_millis(10))? {
+                                        let event = read()?;
+                                        match event {
+                                            Event::Key(KeyEvent {
+                                                code,
+                                                modifiers: _,
+                                                kind: _,
+                                                state: _,
+                                            }) => match code {
+                                                KeyCode::Enter | KeyCode::Char('c') => {
+                                                    self.render(stdout);
+                                                    self.paused = false;
+                                                    break;
+                                                }
+                                                KeyCode::Char('r') => {
+                                                    reset_needed = true;
+                                                    break;
+                                                }
+                                                KeyCode::Char('q') => {
+                                                    quit(stdout)?;
+                                                }
+                                                _ => {}
+                                            },
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if reset_needed {
+                    reset_game(self, stdout);
+                }
+
                 if self.level <= MAX_LEVEL as u32
                     && self.lines >= LINES_PER_LEVEL as u32 * (self.level + 1)
                 {
@@ -423,31 +571,7 @@ impl Game {
                 }
 
                 if self.is_game_over() {
-                    if self.score == 0 {
-                        self.show_high_scores(stdout)?;
-                    } else {
-                        let count: i64 = self.conn.query_row(
-                            "SELECT COUNT(*) FROM high_scores",
-                            params![],
-                            |row| row.get(0),
-                        )?;
-
-                        if count < 5 {
-                            self.new_high_score(stdout)?;
-                        } else {
-                            let player: Player = self.conn.query_row(
-                                "SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 4,1",
-                                params![],
-                                |row| Ok(Player { score: row.get(1)? }),
-                            )?;
-
-                            if (self.score as u64) <= player.score {
-                                self.show_high_scores(stdout)?;
-                            } else {
-                                self.new_high_score(stdout)?;
-                            }
-                        }
-                    }
+                    self.handle_game_over(stdout)?;
                 }
             }
         }
@@ -460,7 +584,7 @@ impl Game {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16 + BLOCK_WIDTH as u16;
                 let screen_y = self.start_y + y as u16 + 9;
-                self.render_cell(stdout, screen_x, screen_y, cell.clone());
+                render_cell(stdout, screen_x, screen_y, cell.clone());
             }
         }
 
@@ -478,11 +602,11 @@ impl Game {
             MoveTo(
                 self.start_x
                     + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
-                        - CONTINUE_MESSAGE.len() as u16)
+                        - CONTINUE_COMMAND.len() as u16)
                         / 2,
                 self.start_y + 11
             ),
-            Print(CONTINUE_MESSAGE),
+            Print(CONTINUE_COMMAND),
             ResetColor
         )
         .unwrap();
@@ -568,7 +692,7 @@ impl Game {
     fn lock_tetromino(&mut self, tetromino: &Tetromino, stdout: &mut io::Stdout) {
         for (ty, row) in tetromino.get_cells().iter().enumerate() {
             for (tx, &ref cell) in row.iter().enumerate() {
-                if cell.symbols != SPACE {
+                if cell.symbols == SQUARE_BRACKETS {
                     let grid_x = tetromino.position.col + tx;
                     let grid_y = tetromino.position.row + ty;
 
@@ -592,9 +716,9 @@ impl Game {
         let mut filled_rows: Vec<usize> = Vec::new();
 
         for row_index in (1..=PLAY_HEIGHT).rev() {
-            if self.play_grid[row_index]
+            if self.play_grid[row_index][1..=PLAY_WIDTH]
                 .iter()
-                .all(|cell| cell.symbols != SPACE)
+                .all(|cell| cell.symbols == SQUARE_BRACKETS)
             {
                 filled_rows.push(row_index);
             }
@@ -613,7 +737,8 @@ impl Game {
             self.lines += 1;
         }
 
-        match filled_rows.len() {
+        let num_filled_rows = filled_rows.len();
+        match num_filled_rows {
             1 => {
                 self.score += 100 * (self.level + 1);
             }
@@ -627,6 +752,12 @@ impl Game {
                 self.score += 800 * (self.level + 1);
             }
             _ => (),
+        }
+
+        if let Some(stream) = &mut self.stream {
+            if num_filled_rows > 0 {
+                send_message(stream, MessageType::ClearedRows(num_filled_rows));
+            }
         }
 
         self.render(stdout);
@@ -702,12 +833,49 @@ impl Game {
     }
 
     fn is_game_over(&mut self) -> bool {
-        for row in &self.play_grid[2..3] {
+        for row in &self.play_grid[1..2] {
             if !self.paused && row.iter().any(|cell| cell.symbols == SQUARE_BRACKETS) {
-                return !self.paused & true;
+                return true;
             }
         }
         false
+    }
+
+    fn handle_game_over(&mut self, stdout: &mut io::Stdout) -> Result<()> {
+        if let Some(stream) = &mut self.stream {
+            send_message(
+                stream,
+                MessageType::Notification(YOU_WIN_MESSAGE.to_string()),
+            );
+        }
+
+        if self.score == 0 {
+            self.show_high_scores(stdout)?;
+        } else {
+            let count: i64 =
+                self.conn
+                    .query_row("SELECT COUNT(*) FROM high_scores", params![], |row| {
+                        row.get(0)
+                    })?;
+
+            if count < 5 {
+                self.new_high_score(stdout)?;
+            } else {
+                let player: Player = self.conn.query_row(
+                    "SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 4,1",
+                    params![],
+                    |row| Ok(Player { score: row.get(1)? }),
+                )?;
+
+                if (self.score as u64) <= player.score {
+                    self.show_high_scores(stdout)?;
+                } else {
+                    self.new_high_score(stdout)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn show_high_scores(&mut self, stdout: &mut io::Stdout) -> Result<()> {
@@ -718,7 +886,7 @@ impl Game {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16 - BLOCK_WIDTH as u16;
                 let screen_y = self.start_y + y as u16 + game_over_start_row;
-                self.render_cell(stdout, screen_x, screen_y, cell.clone());
+                render_cell(stdout, screen_x, screen_y, cell.clone());
             }
         }
 
@@ -743,7 +911,7 @@ impl Game {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16;
                 let screen_y = self.start_y + y as u16 + game_over_start_row + 2;
-                self.render_cell(stdout, screen_x, screen_y, cell.clone());
+                render_cell(stdout, screen_x, screen_y, cell.clone());
             }
         }
 
@@ -762,47 +930,50 @@ impl Game {
             ResetColor
         )?;
 
-        let mut stmt = self
-            .conn
-            .prepare("SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 5")?;
-        let players = stmt.query_map([], |row| {
-            Ok((row.get_unwrap::<_, String>(0), row.get_unwrap::<_, i64>(1)))
-        })?;
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 5",
+            )?;
+            let players = stmt.query_map([], |row| {
+                Ok((row.get_unwrap::<_, String>(0), row.get_unwrap::<_, i64>(1)))
+            })?;
 
-        for (index, player) in players.enumerate() {
-            let (name, score) = player.unwrap();
+            for (index, player) in players.enumerate() {
+                let (name, score) = player.unwrap();
+
+                execute!(
+                    stdout,
+                    MoveTo(
+                        self.start_x + BLOCK_WIDTH as u16 * 2,
+                        self.start_y + index as u16 + game_over_start_row + 4,
+                    ),
+                    SetForegroundColor(Color::White),
+                    SetBackgroundColor(Color::Black),
+                    Print(format!(
+                        "{:<width$}{:>9}",
+                        name,
+                        score,
+                        width = MAX_LENGTH_NAME + 3
+                    )),
+                    ResetColor
+                )?;
+            }
 
             execute!(
                 stdout,
                 MoveTo(
-                    self.start_x + BLOCK_WIDTH as u16 * 2,
-                    self.start_y + index as u16 + game_over_start_row + 4,
+                    self.start_x
+                        + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
+                            - RESTART_COMMAND.len() as u16)
+                            / 2,
+                    self.start_y + game_over_start_row + 10
                 ),
                 SetForegroundColor(Color::White),
                 SetBackgroundColor(Color::Black),
-                Print(format!(
-                    "{:<width$}{:>9}",
-                    name,
-                    score,
-                    width = MAX_LENGTH_NAME + 3
-                )),
+                Print(RESTART_COMMAND),
                 ResetColor
             )?;
         }
-
-        execute!(
-            stdout,
-            MoveTo(
-                self.start_x
-                    + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16 - RESTART_MESSAGE.len() as u16)
-                        / 2,
-                self.start_y + game_over_start_row + 10
-            ),
-            SetForegroundColor(Color::White),
-            SetBackgroundColor(Color::Black),
-            Print(RESTART_MESSAGE),
-            ResetColor
-        )?;
 
         loop {
             if poll(Duration::from_millis(10))? {
@@ -818,7 +989,7 @@ impl Game {
                             quit(stdout)?;
                         }
                         KeyCode::Char('r') => {
-                            reset_game()?;
+                            reset_game(self, stdout);
                         }
                         _ => {}
                     },
@@ -835,7 +1006,7 @@ impl Game {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16 - BLOCK_WIDTH as u16;
                 let screen_y = self.start_y + y as u16 + 8;
-                self.render_cell(stdout, screen_x, screen_y, cell.clone());
+                render_cell(stdout, screen_x, screen_y, cell.clone());
             }
         }
 
@@ -932,19 +1103,14 @@ impl Game {
     }
 }
 
-fn reset_game() -> Result<()> {
-    let conn = open()?;
-    let mut game = Game::new(conn);
+fn reset_game(game: &mut Game, stdout: &mut io::Stdout) {
+    game.reset();
+    game.render(stdout);
 
-    let mut stdout = std::io::stdout();
-    game.render(&mut stdout);
-
-    match game.handle_event(&mut stdout) {
+    match game.handle_event(stdout) {
         Ok(_) => {}
         Err(err) => eprintln!("Error: {}", err),
     }
-
-    Ok(())
 }
 
 fn quit(stdout: &mut io::Stdout) -> Result<()> {
@@ -964,6 +1130,18 @@ fn create_grid(width: usize, height: usize) -> Vec<Vec<Cell>> {
     }
 
     grid
+}
+
+fn render_cell(stdout: &mut std::io::Stdout, x: u16, y: u16, cell: Cell) {
+    execute!(
+        stdout,
+        MoveTo(x, y),
+        SetForegroundColor(cell.color),
+        SetBackgroundColor(Color::Black),
+        Print(cell.symbols),
+        ResetColor
+    )
+    .unwrap();
 }
 
 impl Tetromino {
@@ -1173,25 +1351,89 @@ fn tetromino_width(tetromino: &Vec<Vec<Cell>>) -> usize {
     max_width
 }
 
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value_t = false)]
+    multiplayer: bool,
+
+    #[arg(short, long)]
+    server_address: Option<String>,
+}
+
+enum MessageType {
+    ClearedRows(usize),
+    Notification(String),
+}
+
+const PREFIX_CLEARED_ROWS: &str = "ClearedRows: ";
+const PREFIX_NOTIFICATION: &str = "Notification: ";
+
 fn main() -> Result<()> {
     let conn = open()?;
 
-    terminal::enable_raw_mode()?;
+    let args = Args::parse();
+    if args.multiplayer {
+        let player_barrier = Arc::new(Barrier::new(2));
+        if args.server_address == None {
+            let listener = TcpListener::bind("0.0.0.0:8080")?;
+            let my_local_ip = local_ip().unwrap();
+            println!(
+                "Server started. Please invite your competitor to connect to {}.",
+                format!("{}:8080", my_local_ip)
+            );
 
-    let mut game = Game::new(conn);
-    let mut stdout = io::stdout();
+            let (stream, _) = listener.accept()?;
+            println!("Player 2 connected.");
 
-    execute!(stdout.lock(), cursor::Hide)?;
+            let mut stream_clone = stream.try_clone()?;
+            let thread_barrier = Arc::new(Barrier::new(2));
+            let thread_barrier_clone = thread_barrier.clone();
+            let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
+            let mut game = Game::new(conn, Some(stream), Some(receiver));
 
-    game.render(&mut stdout);
+            thread::spawn(move || {
+                thread_barrier_clone.wait();
+                receive_message(&mut stream_clone, sender);
+            });
 
-    match game.handle_event(&mut stdout) {
-        Ok(_) => {}
-        Err(err) => eprintln!("Error: {}", err),
+            thread_barrier.wait();
+
+            let player_barrier_clone = player_barrier.clone();
+
+            game.start();
+
+            player_barrier_clone.wait();
+        } else {
+            if let Some(server_address) = args.server_address {
+                let stream = TcpStream::connect(server_address)?;
+
+                let mut stream_clone = stream.try_clone()?;
+                let thread_barrier = Arc::new(Barrier::new(2));
+                let thread_barrier_clone = thread_barrier.clone();
+                let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
+                let mut game = Game::new(conn, Some(stream), Some(receiver));
+
+                thread::spawn(move || {
+                    thread_barrier_clone.wait();
+                    receive_message(&mut stream_clone, sender);
+                });
+
+                thread_barrier.wait();
+
+                let player_barrier_clone = player_barrier.clone();
+
+                game.start();
+
+                player_barrier_clone.wait();
+            }
+        }
+
+        player_barrier.wait();
+    } else {
+        let mut game = Game::new(conn, None, None);
+        game.start();
     }
-
-    execute!(io::stdout(), cursor::Show)?;
-    terminal::disable_raw_mode()?;
 
     Ok(())
 }
@@ -1240,4 +1482,39 @@ fn print_message(stdout: &mut io::Stdout, _grid_width: u16, grid_height: u16, n:
         ResetColor
     )
     .unwrap();
+}
+
+fn send_message(stream: &mut TcpStream, message: MessageType) {
+    let message_string = match message {
+        MessageType::ClearedRows(rows) => format!("{}{}", PREFIX_CLEARED_ROWS, rows),
+        MessageType::Notification(msg) => format!("{}{}", PREFIX_NOTIFICATION, msg),
+    };
+
+    if let Err(err) = stream.write_all(message_string.as_bytes()) {
+        eprintln!("Error sending message: {}", err);
+    }
+}
+
+fn receive_message(stream: &mut TcpStream, sender: Sender<MessageType>) {
+    let mut buffer = [0u8; 256];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(n) if n > 0 => {
+                let msg = String::from_utf8_lossy(&buffer[0..n]);
+                println!("received: {}", msg);
+                if msg.starts_with(PREFIX_CLEARED_ROWS) {
+                    if let Ok(rows) = msg.trim_start_matches(PREFIX_CLEARED_ROWS).parse() {
+                        println!("sending cleared rows: {}", rows);
+                        sender.send(MessageType::ClearedRows(rows)).unwrap();
+                    }
+                } else if msg.starts_with(PREFIX_NOTIFICATION) {
+                    let msg = msg.trim_start_matches(PREFIX_NOTIFICATION).to_string();
+                    sender.send(MessageType::Notification(msg)).unwrap();
+                }
+            }
+            Ok(_) | Err(_) => {
+                break;
+            }
+        }
+    }
 }
