@@ -449,22 +449,26 @@ impl Game {
                                             Event::Key(KeyEvent {
                                                 code,
                                                 modifiers: _,
-                                                kind: _,
+                                                kind,
                                                 state: _,
-                                            }) => match code {
-                                                KeyCode::Enter | KeyCode::Char('c') => {
-                                                    self.render(stdout);
-                                                    self.paused = false;
-                                                    break;
+                                            }) => {
+                                                if kind == KeyEventKind::Press {
+                                                    match code {
+                                                        KeyCode::Enter | KeyCode::Char('c') => {
+                                                            self.render(stdout);
+                                                            self.paused = false;
+                                                            break;
+                                                        }
+                                                        KeyCode::Char('r') => {
+                                                            reset_needed = true;
+                                                            break;
+                                                        }
+                                                        KeyCode::Char('q') => {
+                                                            quit(stdout)?;
+                                                        }
+                                                        _ => {}
+                                                    }
                                                 }
-                                                KeyCode::Char('r') => {
-                                                    reset_needed = true;
-                                                    break;
-                                                }
-                                                KeyCode::Char('q') => {
-                                                    quit(stdout)?;
-                                                }
-                                                _ => {}
                                             },
                                             _ => {}
                                         }
@@ -515,22 +519,22 @@ impl Game {
                             kind,
                             modifiers: _,
                         }) => {
-                            let mut tetromino = self.current_tetromino.clone();
-                            match code {
-                                KeyCode::Char('h') | KeyCode::Left => {
-                                    tetromino.move_left(self, stdout);
-                                    self.current_tetromino = tetromino;
-                                }
-                                KeyCode::Char('l') | KeyCode::Right => {
-                                    tetromino.move_right(self, stdout);
-                                    self.current_tetromino = tetromino;
-                                }
-                                KeyCode::Char(' ') => {
-                                    tetromino.rotate(self, stdout);
-                                    self.current_tetromino = tetromino;
-                                }
-                                KeyCode::Char('s') | KeyCode::Up => {
-                                    if kind == KeyEventKind::Press {
+                            if kind == KeyEventKind::Press {
+                                let mut tetromino = self.current_tetromino.clone();
+                                match code {
+                                    KeyCode::Char('h') | KeyCode::Left => {
+                                        tetromino.move_left(self, stdout);
+                                        self.current_tetromino = tetromino;
+                                    }
+                                    KeyCode::Char('l') | KeyCode::Right => {
+                                        tetromino.move_right(self, stdout);
+                                        self.current_tetromino = tetromino;
+                                    }
+                                    KeyCode::Char(' ') => {
+                                        tetromino.rotate(self, stdout);
+                                        self.current_tetromino = tetromino;
+                                    }
+                                    KeyCode::Char('s') | KeyCode::Up => {
                                         if soft_drop_timer.elapsed()
                                             >= (Duration::from_millis(self.drop_interval / 4))
                                         {
@@ -551,18 +555,18 @@ impl Game {
                                             soft_drop_timer = Instant::now();
                                         }
                                     }
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        tetromino.hard_drop(self, stdout);
+                                        self.lock_and_move_to_next(&tetromino, stdout);
+                                    }
+                                    KeyCode::Char('p') => {
+                                        self.paused = !self.paused;
+                                    }
+                                    KeyCode::Char('q') => {
+                                        quit(stdout)?;
+                                    }
+                                    _ => {}
                                 }
-                                KeyCode::Char('j') | KeyCode::Down => {
-                                    tetromino.hard_drop(self, stdout);
-                                    self.lock_and_move_to_next(&tetromino, stdout);
-                                }
-                                KeyCode::Char('p') => {
-                                    self.paused = !self.paused;
-                                }
-                                KeyCode::Char('q') => {
-                                    quit(stdout)?;
-                                }
-                                _ => {}
                             }
                         }
                         _ => {}
@@ -618,18 +622,22 @@ impl Game {
                     Event::Key(KeyEvent {
                         code,
                         modifiers: _,
-                        kind: _,
+                        kind,
                         state: _,
-                    }) => match code {
-                        KeyCode::Enter | KeyCode::Char('c') => {
-                            self.render(stdout);
-                            self.paused = false;
-                            break;
+                    }) => {
+                        if kind == KeyEventKind::Press {
+                            match code {
+                                KeyCode::Enter | KeyCode::Char('c') => {
+                                    self.render(stdout);
+                                    self.paused = false;
+                                    break;
+                                }
+                                KeyCode::Char('q') => {
+                                    quit(stdout)?;
+                                }
+                                _ => {}
+                            }
                         }
-                        KeyCode::Char('q') => {
-                            quit(stdout)?;
-                        }
-                        _ => {}
                     },
                     _ => {}
                 }
@@ -982,16 +990,20 @@ impl Game {
                     Event::Key(KeyEvent {
                         code,
                         modifiers: _,
-                        kind: _,
+                        kind,
                         state: _,
-                    }) => match code {
-                        KeyCode::Char('q') => {
-                            quit(stdout)?;
+                    }) => {
+                        if kind == KeyEventKind::Press {
+                            match code {
+                                KeyCode::Char('q') => {
+                                    quit(stdout)?;
+                                }
+                                KeyCode::Char('r') => {
+                                    reset_game(self, stdout);
+                                }
+                                _ => {}
+                            }
                         }
-                        KeyCode::Char('r') => {
-                            reset_game(self, stdout);
-                        }
-                        _ => {}
                     },
                     _ => {}
                 }
@@ -1038,62 +1050,64 @@ impl Game {
                     Event::Key(KeyEvent {
                         code,
                         state: _,
-                        kind: _,
+                        kind,
                         modifiers: _,
                     }) => {
-                        match code {
-                            KeyCode::Backspace => {
-                                // Handle Backspace key to remove characters.
-                                if !name.is_empty() && cursor_position > 0 {
-                                    name.remove(cursor_position - 1);
-                                    cursor_position -= 1;
+                        if kind == KeyEventKind::Press {
+                            match code {
+                                KeyCode::Backspace => {
+                                    // Handle Backspace key to remove characters.
+                                    if !name.is_empty() && cursor_position > 0 {
+                                        name.remove(cursor_position - 1);
+                                        cursor_position -= 1;
 
-                                    stdout.execute(MoveLeft(1))?;
-                                    stdout.write(b" ")?;
-                                    stdout.flush()?;
-                                    print!("{}", &name[cursor_position..]);
-                                    stdout.execute(MoveLeft(
-                                        name.len() as u16 - cursor_position as u16 + 1,
-                                    ))?;
-                                    stdout.flush()?;
-                                }
-                            }
-                            KeyCode::Enter => {
-                                self.conn.execute(
-                                    "INSERT INTO high_scores (player_name, score) VALUES (?1, ?2)",
-                                    params![name, self.score],
-                                )?;
-
-                                execute!(stdout.lock(), cursor::Hide)?;
-                                self.show_high_scores(stdout)?;
-                            }
-                            KeyCode::Left => {
-                                // Move the cursor left.
-                                if cursor_position > 0 {
-                                    stdout.execute(MoveLeft(1))?;
-                                    cursor_position -= 1;
-                                }
-                            }
-                            KeyCode::Right => {
-                                // Move the cursor right.
-                                if cursor_position < name.len() {
-                                    stdout.execute(MoveRight(1))?;
-                                    cursor_position += 1;
-                                }
-                            }
-                            KeyCode::Char(c) => {
-                                if name.len() <= MAX_LENGTH_NAME {
-                                    name.insert(cursor_position, c);
-                                    cursor_position += 1;
-                                    print!("{}", &name[cursor_position - 1..]);
-                                    stdout.flush()?;
-                                    for _ in cursor_position..name.len() {
                                         stdout.execute(MoveLeft(1))?;
+                                        stdout.write(b" ")?;
+                                        stdout.flush()?;
+                                        print!("{}", &name[cursor_position..]);
+                                        stdout.execute(MoveLeft(
+                                            name.len() as u16 - cursor_position as u16 + 1,
+                                        ))?;
+                                        stdout.flush()?;
                                     }
-                                    stdout.flush()?;
                                 }
+                                KeyCode::Enter => {
+                                    self.conn.execute(
+                                        "INSERT INTO high_scores (player_name, score) VALUES (?1, ?2)",
+                                        params![name, self.score],
+                                    )?;
+
+                                    execute!(stdout.lock(), cursor::Hide)?;
+                                    self.show_high_scores(stdout)?;
+                                }
+                                KeyCode::Left => {
+                                    // Move the cursor left.
+                                    if cursor_position > 0 {
+                                        stdout.execute(MoveLeft(1))?;
+                                        cursor_position -= 1;
+                                    }
+                                }
+                                KeyCode::Right => {
+                                    // Move the cursor right.
+                                    if cursor_position < name.len() {
+                                        stdout.execute(MoveRight(1))?;
+                                        cursor_position += 1;
+                                    }
+                                }
+                                KeyCode::Char(c) => {
+                                    if name.len() <= MAX_LENGTH_NAME {
+                                        name.insert(cursor_position, c);
+                                        cursor_position += 1;
+                                        print!("{}", &name[cursor_position - 1..]);
+                                        stdout.flush()?;
+                                        for _ in cursor_position..name.len() {
+                                            stdout.execute(MoveLeft(1))?;
+                                        }
+                                        stdout.flush()?;
+                                    }
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
                     _ => {}
