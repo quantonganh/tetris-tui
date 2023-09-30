@@ -1501,10 +1501,8 @@ fn receive_message(stream: &mut TcpStream, sender: Sender<MessageType>) {
         match stream.read(&mut buffer) {
             Ok(n) if n > 0 => {
                 let msg = String::from_utf8_lossy(&buffer[0..n]);
-                println!("received: {}", msg);
                 if msg.starts_with(PREFIX_CLEARED_ROWS) {
                     if let Ok(rows) = msg.trim_start_matches(PREFIX_CLEARED_ROWS).parse() {
-                        println!("sending cleared rows: {}", rows);
                         sender.send(MessageType::ClearedRows(rows)).unwrap();
                     }
                 } else if msg.starts_with(PREFIX_NOTIFICATION) {
