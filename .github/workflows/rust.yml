@@ -54,12 +54,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Publish
-      if: matrix.build == 'x86_64-linux'
-      run: |
-        cargo login ${{ secrets.CRATES_IO_API_TOKEN }}
-        cargo publish --target x86_64-unknown-linux-gnu
-
     - name: Install ${{ matrix.rust }} toolchain
       uses: dtolnay/rust-toolchain@master
       with:
