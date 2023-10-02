@@ -31,3 +31,39 @@ scoop install tetris-tui
 ```
 $ cargo install tetris-tui
 ```
+
+## Usage
+
+```
+$ tetris-tui -h
+Tetris in the terminal
+
+Usage: tetris-tui [OPTIONS]
+
+Options:
+  -m, --multiplayer
+  -s, --server-address <SERVER_ADDRESS>
+  -h, --help                             Print help
+  -V, --version                          Print version
+```
+
+### Single player mode
+
+```sh
+$ tetris-tui
+```
+
+### 2-player mode
+
+Player 1:
+
+```sh
+$ tetris-tui -m
+Server started. Please invite your competitor to connect to 192.168.1.183:8080.
+```
+
+Player 2:
+
+```sh
+$ tetris-tui -m -s 192.168.1.183:8080
+```
