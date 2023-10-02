@@ -24,27 +24,32 @@ jobs:
           rust: stable
           target: x86_64-apple-darwin
           cross: false
+          jreleaser_platform: osx-x86_64
         - build: aarch64-macos
           os: macos-latest
           rust: stable
           target: aarch64-apple-darwin
           cross: false
           skip_tests: true
+          jreleaser_platform: osx-aarch_64
         - build: x86_64-linux
           os: ubuntu-latest
           rust: stable
           target: x86_64-unknown-linux-gnu
           cross: false
+          jreleaser_platform: linux-x86_64
         - build: aarch64-linux
           os: ubuntu-latest
           rust: stable
           target: aarch64-unknown-linux-gnu
           cross: true
+          jreleaser_platform: linux-aarch_64
         - build: x86_64-windows
           os: windows-latest
           rust: stable
           target: x86_64-pc-windows-msvc
           cross: false
+          jreleaser_platform: windows-x86_64
 
     steps:
     - uses: actions/checkout@v4
@@ -74,22 +79,49 @@ jobs:
       run: |
         cargo build --release --locked --target ${{ matrix.target }}
 
-    - name: Package
-      shell: bash
-      run: |
-        cd target/${{ matrix.target }}/release          
-        if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
-          7z a ../../../tetris-tui-${{ github.ref_name }}-${{ matrix.target }}.zip tetris-tui.exe
-        else
-          tar czvf ../../../tetris-tui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz tetris-tui
-        fi
-        cd -
-
-    - name: Create GitHub Release
-      id: create_release
-      uses: softprops/action-gh-release@v1
+    - name: jReleaser assemble
+      uses: jreleaser/release-action@v2
       with:
-        files: tetris-tui-*
-        name: Release ${{ matrix.target }}
+        arguments: assemble
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        JRELEASER_PROJECT_VERSION: ${{ github.ref_name }}
+        JRELEASER_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        JRELEASER_PLATFORM_OVERRIDE: ${{ matrix.jreleaser_platform }}
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: artifacts
+        path: |
+          out/jreleaser/assemble/tetris-tui/archive/*.zip
+
+  release:
+    needs: [ build ]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Release
+        uses: jreleaser/release-action@v2
+        with:
+          arguments: full-release -PartifactsDir=artifacts -PskipArchiveResolver
+        env:
+          JRELEASER_PROJECT_VERSION: ${{ github.ref_name }}
+          JRELEASER_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          JRELEASER_CHOCOLATEY_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+
+      - name: Upload JReleaser output
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: jreleaser-release
+          path: |
+            out/jreleaser/trace.log
+            out/jreleaser/output.properties
