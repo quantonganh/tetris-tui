@@ -1,0 +1,87 @@
+# Generated with JReleaser 1.8.0 at 2023-10-02T08:35:59.173724+07:00
+project:
+  name: tetris-tui
+  description: Play tetris in the terminal
+  authors:
+    - Quan Tong
+  license: MIT
+  links:
+    homepage: https://github.com/quantonganh/tetris-tui/
+  inceptionYear: 2023
+
+environment:
+  properties:
+    artifactsDir: out/jreleaser/assemble/tetris-tui/archive
+
+platform:
+  replacements:
+    'osx-x86_64': 'x86_64-apple-darwin'
+    'osx-aarch_64': 'aarch64-apple-darwin'
+    'linux-x86_64': 'x86_64-unknown-linux-gnu'
+    'linux-aarch_64': 'aarch64-unknown-linux-gnu'
+    'windows-x86_64': 'x86_64-pc-windows-msvc'
+
+assemble:
+  archive:
+    tetris-tui:
+      active: ALWAYS
+      formats: [ ZIP ]
+      attachPlatform: true
+      fileSets:
+        - input: 'target/{{ osPlatformReplaced }}/release'
+          output: 'bin'
+          includes: [ 'tetris-tui{.exe,}' ]
+        - input: '.'
+          includes: [ 'LICENSE' ]
+
+distributions:
+  tetris-tui:
+    type: BINARY
+    artifacts:
+      - path: '{{artifactsDir}}/{{distributionName}}-{{projectVersion}}-x86_64-apple-darwin.zip'
+        platform: 'osx-x86_64'
+      - path: '{{artifactsDir}}/{{distributionName}}-{{projectVersion}}-aarch64-apple-darwin.zip'
+        platform: 'osx-aarch_64'
+      - path: '{{artifactsDir}}/{{distributionName}}-{{projectVersion}}-x86_64-unknown-linux-gnu.zip'
+        platform: 'linux-x86_64'
+      - path: '{{artifactsDir}}/{{distributionName}}-{{projectVersion}}-aarch64-unknown-linux-gnu.zip'
+        platform: 'linux-aarch_64'
+      - path: '{{artifactsDir}}/{{distributionName}}-{{projectVersion}}-x86_64-pc-windows-msvc.zip'
+        platform: 'windows-x86_64'
+    tags:
+      - tetris
+      - cli
+
+packagers:
+  brew:
+    active: ALWAYS
+    commitAuthor:
+      name: quantonganh
+      email: quantonganh@mail.com
+    repository:
+      owner: quantonganh
+      name: homebrew-tap
+    multiPlatform: true
+
+  chocolatey:
+    active: ALWAYS
+    commitAuthor:
+      name: quantonganh
+      email: quantonganh@mail.com
+    repository:
+      owner: quantonganh
+
+  scoop:
+    active: ALWAYS
+    commitAuthor:
+      name: quantonganh
+      email: quantonganh@mail.com
+    repository:
+      owner: quantonganh
+      name: scoop-bucket
+
+release:
+  github:
+    owner: quantonganh
+    overwrite: true
+    skipTag: true
