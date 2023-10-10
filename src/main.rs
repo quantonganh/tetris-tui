@@ -1,5 +1,4 @@
 use core::fmt;
-use crossterm::cursor::{MoveLeft, MoveRight};
 use rand::Rng;
 use std::error::Error;
 use std::io::{self, Write};
@@ -7,7 +6,7 @@ use std::time::{Duration, Instant};
 use std::{fs, result};
 
 use crossterm::{
-    cursor::{self, MoveTo},
+    cursor::{self, MoveLeft, MoveRight, MoveTo, RestorePosition, SavePosition},
     event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind},
     execute,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
@@ -296,6 +295,7 @@ impl Game {
         let preview_start_x = self.start_x + (PLAY_WIDTH + 4) as u16 * BLOCK_WIDTH as u16;
         execute!(
             stdout,
+            SavePosition,
             MoveTo(
                 preview_start_x + 1,
                 self.start_y + PREVIEW_HEIGHT as u16 + 4
@@ -367,7 +367,8 @@ impl Game {
                 String::from("Pause"),
                 String::from("p")
             )),
-            ResetColor
+            ResetColor,
+            RestorePosition
         )
         .unwrap();
     }
@@ -423,6 +424,7 @@ impl Game {
                                     stdout,
                                     SetForegroundColor(Color::White),
                                     SetBackgroundColor(Color::Black),
+                                    SavePosition,
                                     MoveTo(
                                         self.start_x
                                             + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
@@ -439,7 +441,8 @@ impl Game {
                                         self.start_y + 11
                                     ),
                                     Print(RESTART_CONTINUE_COMMAND),
-                                    ResetColor
+                                    ResetColor,
+                                    RestorePosition
                                 )?;
 
                                 loop {
@@ -469,7 +472,7 @@ impl Game {
                                                         _ => {}
                                                     }
                                                 }
-                                            },
+                                            }
                                             _ => {}
                                         }
                                     }
@@ -596,6 +599,7 @@ impl Game {
             stdout,
             SetForegroundColor(Color::White),
             SetBackgroundColor(Color::Black),
+            SavePosition,
             MoveTo(
                 self.start_x
                     + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16 - PAUSED_MESSAGE.len() as u16)
@@ -611,7 +615,8 @@ impl Game {
                 self.start_y + 11
             ),
             Print(CONTINUE_COMMAND),
-            ResetColor
+            ResetColor,
+            RestorePosition
         )
         .unwrap();
 
@@ -638,7 +643,7 @@ impl Game {
                                 _ => {}
                             }
                         }
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -677,16 +682,19 @@ impl Game {
                 let grid_y = tetromino.position.row + row_index as usize;
 
                 if cell.symbols != SPACE {
-                    stdout
-                        .execute(MoveTo(
+                    execute!(
+                        stdout,
+                        SetBackgroundColor(Color::Black),
+                        SavePosition,
+                        MoveTo(
                             self.start_x + grid_x as u16 * BLOCK_WIDTH as u16,
                             self.start_y + grid_y as u16,
-                        ))
-                        .unwrap()
-                        .execute(SetBackgroundColor(Color::Black))
-                        .unwrap()
-                        .execute(Print(SPACE))
-                        .unwrap();
+                        ),
+                        Print(SPACE),
+                        ResetColor,
+                        RestorePosition
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -790,6 +798,7 @@ impl Game {
                     {
                         execute!(
                             stdout,
+                            SavePosition,
                             MoveTo(
                                 self.start_x + grid_x as u16 * BLOCK_WIDTH as u16,
                                 self.start_y + grid_y as u16
@@ -798,6 +807,7 @@ impl Game {
                             SetBackgroundColor(Color::Black),
                             Print(cell.symbols),
                             ResetColor,
+                            RestorePosition,
                         )
                         .unwrap();
                     }
@@ -823,6 +833,7 @@ impl Game {
                     {
                         execute!(
                             stdout,
+                            SavePosition,
                             MoveTo(
                                 self.start_x
                                     + (PLAY_WIDTH + 2 + grid_x) as u16 * BLOCK_WIDTH as u16,
@@ -832,6 +843,7 @@ impl Game {
                             SetBackgroundColor(Color::Black),
                             Print(cell.symbols),
                             ResetColor,
+                            RestorePosition,
                         )
                         .unwrap();
                     }
@@ -900,6 +912,7 @@ impl Game {
 
         execute!(
             stdout,
+            SavePosition,
             MoveTo(
                 self.start_x
                     + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
@@ -910,7 +923,8 @@ impl Game {
             SetForegroundColor(Color::White),
             SetBackgroundColor(Color::Black),
             Print(GAME_OVER_MESSAGE),
-            ResetColor
+            ResetColor,
+            RestorePosition,
         )?;
 
         let high_scores_grid = create_grid(PLAY_WIDTH, 6);
@@ -925,6 +939,7 @@ impl Game {
 
         execute!(
             stdout,
+            SavePosition,
             MoveTo(
                 self.start_x
                     + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
@@ -935,7 +950,8 @@ impl Game {
             SetForegroundColor(Color::White),
             SetBackgroundColor(Color::Black),
             Print(HIGH_SCORES_MESSAGE),
-            ResetColor
+            ResetColor,
+            RestorePosition,
         )?;
 
         {
@@ -951,6 +967,7 @@ impl Game {
 
                 execute!(
                     stdout,
+                    SavePosition,
                     MoveTo(
                         self.start_x + BLOCK_WIDTH as u16 * 2,
                         self.start_y + index as u16 + game_over_start_row + 4,
@@ -963,12 +980,14 @@ impl Game {
                         score,
                         width = MAX_LENGTH_NAME + 3
                     )),
-                    ResetColor
+                    ResetColor,
+                    RestorePosition,
                 )?;
             }
 
             execute!(
                 stdout,
+                SavePosition,
                 MoveTo(
                     self.start_x
                         + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
@@ -979,7 +998,8 @@ impl Game {
                 SetForegroundColor(Color::White),
                 SetBackgroundColor(Color::Black),
                 Print(RESTART_COMMAND),
-                ResetColor
+                ResetColor,
+                RestorePosition,
             )?;
         }
 
@@ -1004,7 +1024,7 @@ impl Game {
                                 _ => {}
                             }
                         }
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -1149,11 +1169,13 @@ fn create_grid(width: usize, height: usize) -> Vec<Vec<Cell>> {
 fn render_cell(stdout: &mut std::io::Stdout, x: u16, y: u16, cell: Cell) {
     execute!(
         stdout,
+        SavePosition,
         MoveTo(x, y),
         SetForegroundColor(cell.color),
         SetBackgroundColor(Color::Black),
         Print(cell.symbols),
-        ResetColor
+        ResetColor,
+        RestorePosition,
     )
     .unwrap();
 }
@@ -1489,11 +1511,13 @@ fn print_message(stdout: &mut io::Stdout, _grid_width: u16, grid_height: u16, n:
     let start_y = (term_height - grid_height) / 2;
     execute!(
         stdout,
+        SavePosition,
         MoveTo(start_x, start_y + n),
         SetForegroundColor(Color::White),
         SetBackgroundColor(Color::Black),
         Print(msg),
-        ResetColor
+        ResetColor,
+        RestorePosition,
     )
     .unwrap();
 }
