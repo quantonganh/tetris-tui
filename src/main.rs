@@ -19,7 +19,6 @@ use rusqlite::{params, Connection, Result as RusqliteResult};
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Barrier};
 use std::thread;
 
 use clap::Parser;
@@ -1410,7 +1409,6 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
     if args.multiplayer {
-        let player_barrier = Arc::new(Barrier::new(2));
         if args.server_address == None {
             let listener = TcpListener::bind("0.0.0.0:8080")?;
             let my_local_ip = local_ip().unwrap();
@@ -1423,49 +1421,29 @@ fn main() -> Result<()> {
             println!("Player 2 connected.");
 
             let mut stream_clone = stream.try_clone()?;
-            let thread_barrier = Arc::new(Barrier::new(2));
-            let thread_barrier_clone = thread_barrier.clone();
             let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
             let mut game = Game::new(conn, Some(stream), Some(receiver));
 
             thread::spawn(move || {
-                thread_barrier_clone.wait();
                 receive_message(&mut stream_clone, sender);
             });
 
-            thread_barrier.wait();
-
-            let player_barrier_clone = player_barrier.clone();
-
             game.start();
-
-            player_barrier_clone.wait();
         } else {
             if let Some(server_address) = args.server_address {
                 let stream = TcpStream::connect(server_address)?;
 
                 let mut stream_clone = stream.try_clone()?;
-                let thread_barrier = Arc::new(Barrier::new(2));
-                let thread_barrier_clone = thread_barrier.clone();
                 let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
                 let mut game = Game::new(conn, Some(stream), Some(receiver));
 
                 thread::spawn(move || {
-                    thread_barrier_clone.wait();
                     receive_message(&mut stream_clone, sender);
                 });
 
-                thread_barrier.wait();
-
-                let player_barrier_clone = player_barrier.clone();
-
                 game.start();
-
-                player_barrier_clone.wait();
             }
         }
-
-        player_barrier.wait();
     } else {
         let mut game = Game::new(conn, None, None);
         game.start();
