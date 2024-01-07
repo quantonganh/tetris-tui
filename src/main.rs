@@ -2,6 +2,7 @@ use core::fmt;
 use rand::Rng;
 use std::error::Error;
 use std::io::{self, Write};
+use std::process::exit;
 use std::time::{Duration, Instant};
 use std::{fs, result};
 
@@ -187,6 +188,13 @@ impl Game {
         let (term_width, term_height) = terminal::size().unwrap();
         let grid_width = (PLAY_WIDTH + 2) * BLOCK_WIDTH;
         let grid_height = PLAY_HEIGHT + 2;
+        if term_width < grid_width as u16 || term_height < grid_height as u16 {
+            eprintln!(
+                "The terminal is too small: {}x{}.\nRequired dimensions are  : {}x{}.",
+                term_width, term_height, grid_width, grid_height
+            );
+            exit(1);
+        }
         let start_x = (term_width - grid_width as u16) / 2;
         let start_y = (term_height - grid_height as u16) / 2;
 
