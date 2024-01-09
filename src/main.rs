@@ -28,11 +28,12 @@ use local_ip_address::local_ip;
 const PLAY_WIDTH: usize = 10;
 const PLAY_HEIGHT: usize = 20;
 
-const PREVIEW_WIDTH: usize = 6;
-const PREVIEW_HEIGHT: usize = 5;
+const DISTANCE: u16 = 6;
 
-const SCORE_HEIGHT: usize = 3;
-const HELP_HEIGHT: usize = 6;
+const NEXT_WIDTH: usize = 6;
+const NEXT_HEIGHT: usize = 5;
+
+const STATS_WIDTH: u16 = 18;
 
 const MAX_LEVEL: usize = 20;
 const LINES_PER_LEVEL: usize = 20;
@@ -136,16 +137,8 @@ struct Player {
     score: u64,
 }
 
-const GAME_OVER_MESSAGE: &str = "GAME OVER";
-const HIGH_SCORES_MESSAGE: &str = "HIGH SCORES";
-const RESTART_COMMAND: &str = "(R)estart | (Q)uit";
-const PAUSED_MESSAGE: &str = "PAUSED";
-const CONTINUE_COMMAND: &str = "(C)ontinue | (Q)uit";
-
-const MAX_LENGTH_NAME: usize = 12;
-
-const YOU_WIN_MESSAGE: &str = "YOU WIN!";
-const RESTART_CONTINUE_COMMAND: &str = "(R)estart | (C)ontinue | (Q)uit";
+const ENTER_YOUR_NAME_MESSAGE: &str = "Enter your name: ";
+const MAX_NAME_LENGTH: usize = 12;
 
 #[derive(Debug)]
 struct GameError {
@@ -162,9 +155,14 @@ impl Error for GameError {}
 
 type Result<T> = result::Result<T, Box<dyn Error>>;
 
+struct MultiplayerScore {
+    my_score: u8,
+    competitor_score: u8,
+}
+
 struct Game {
     play_grid: Vec<Vec<Cell>>,
-    preview_grid: Vec<Vec<Cell>>,
+    next_grid: Vec<Vec<Cell>>,
     current_tetromino: Tetromino,
     next_tetromino: Tetromino,
     start_x: u16,
@@ -177,6 +175,7 @@ struct Game {
     paused: bool,
     stream: Option<TcpStream>,
     receiver: Option<Receiver<MessageType>>,
+    multiplayer_score: MultiplayerScore,
 }
 
 impl Game {
@@ -184,14 +183,16 @@ impl Game {
         conn: Connection,
         stream: Option<TcpStream>,
         receiver: Option<Receiver<MessageType>>,
-    ) -> Self {
-        let (term_width, term_height) = terminal::size().unwrap();
+    ) -> Result<Self> {
+        let (term_width, term_height) = terminal::size()?;
         let grid_width = (PLAY_WIDTH + 2) * BLOCK_WIDTH;
         let grid_height = PLAY_HEIGHT + 2;
-        if term_width < grid_width as u16 || term_height < grid_height as u16 {
+        let required_width =
+            (STATS_WIDTH + 2 + DISTANCE) * 2 + PLAY_WIDTH as u16 * BLOCK_WIDTH as u16 + 2;
+        if term_width < required_width as u16 || term_height < grid_height as u16 {
             eprintln!(
                 "The terminal is too small: {}x{}.\nRequired dimensions are  : {}x{}.",
-                term_width, term_height, grid_width, grid_height
+                term_width, term_height, required_width, grid_height
             );
             exit(1);
         }
@@ -199,14 +200,14 @@ impl Game {
         let start_y = (term_height - grid_height as u16) / 2;
 
         let play_grid = create_grid(PLAY_WIDTH, PLAY_HEIGHT);
-        let preview_grid = create_grid(PREVIEW_WIDTH, PREVIEW_HEIGHT);
+        let next_grid = create_grid(NEXT_WIDTH, NEXT_HEIGHT);
 
         let current_tetromino = Tetromino::new(false);
         let next_tetromino = Tetromino::new(true);
 
-        Game {
+        Ok(Game {
             play_grid,
-            preview_grid,
+            next_grid,
             current_tetromino,
             next_tetromino,
             start_x,
@@ -219,31 +220,37 @@ impl Game {
             paused: false,
             stream,
             receiver,
-        }
+            multiplayer_score: MultiplayerScore {
+                my_score: 0,
+                competitor_score: 0,
+            },
+        })
     }
 
-    fn start(&mut self) {
-        terminal::enable_raw_mode().unwrap();
+    fn start(&mut self) -> Result<()> {
+        terminal::enable_raw_mode()?;
 
         let mut stdout = io::stdout();
 
-        execute!(stdout.lock(), cursor::Hide).unwrap();
+        execute!(stdout.lock(), cursor::Hide)?;
 
-        self.render(&mut stdout);
+        self.render(&mut stdout)?;
 
         match self.handle_event(&mut stdout) {
             Ok(_) => {}
             Err(err) => eprintln!("Error: {}", err),
         }
 
-        execute!(io::stdout(), cursor::Show).unwrap();
-        terminal::disable_raw_mode().unwrap();
+        execute!(io::stdout(), cursor::Show)?;
+        terminal::disable_raw_mode()?;
+
+        Ok(())
     }
 
     fn reset(&mut self) {
         // Reset play and preview grids
         self.play_grid = create_grid(PLAY_WIDTH, PLAY_HEIGHT);
-        self.preview_grid = create_grid(PREVIEW_WIDTH, PREVIEW_HEIGHT);
+        self.next_grid = create_grid(NEXT_WIDTH, NEXT_HEIGHT);
 
         // Reset tetrominos
         self.current_tetromino = Tetromino::new(false);
@@ -264,120 +271,83 @@ impl Game {
         self.paused = false;
     }
 
-    fn render(&self, stdout: &mut std::io::Stdout) {
-        stdout.execute(Clear(ClearType::All)).unwrap();
+    fn render(&self, stdout: &mut std::io::Stdout) -> Result<()> {
+        stdout.execute(Clear(ClearType::All))?;
 
         for (y, row) in self.play_grid.iter().enumerate() {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16;
                 let screen_y = self.start_y + y as u16;
-                render_cell(stdout, screen_x, screen_y, cell.clone());
+                render_cell(stdout, screen_x, screen_y, cell.clone())?;
             }
         }
 
-        for (y, row) in self.preview_grid.iter().enumerate() {
-            for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + (x + PLAY_WIDTH + 3) as u16 * BLOCK_WIDTH as u16;
-                let screen_y = self.start_y + y as u16;
-                render_cell(stdout, screen_x, screen_y, cell.clone());
-            }
-        }
+        let next_start_x = self.start_x + PLAY_WIDTH as u16 * BLOCK_WIDTH as u16 + 3 + DISTANCE;
 
-        for (y, row) in create_grid(PREVIEW_WIDTH, SCORE_HEIGHT).iter().enumerate() {
-            for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + (x + PLAY_WIDTH + 3) as u16 * BLOCK_WIDTH as u16;
-                let screen_y = self.start_y + y as u16 + 8;
-                render_cell(stdout, screen_x, screen_y, cell.clone());
-            }
-        }
-
-        for (y, row) in create_grid(PREVIEW_WIDTH, HELP_HEIGHT).iter().enumerate() {
-            for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + (x + PLAY_WIDTH + 3) as u16 * BLOCK_WIDTH as u16;
-                let screen_y = self.start_y + y as u16 + 14;
-                render_cell(stdout, screen_x, screen_y, cell.clone());
-            }
-        }
-
-        let preview_start_x = self.start_x + (PLAY_WIDTH + 4) as u16 * BLOCK_WIDTH as u16;
-        execute!(
+        render_frame(
             stdout,
-            SavePosition,
-            MoveTo(
-                preview_start_x + 1,
-                self.start_y + PREVIEW_HEIGHT as u16 + 4
-            ),
-            SetForegroundColor(Color::White),
-            SetBackgroundColor(Color::Black),
-            Print(format!("Score: {}", self.score)),
-            MoveTo(
-                preview_start_x + 1,
-                self.start_y + PREVIEW_HEIGHT as u16 + 5
-            ),
-            Print(format!("Lines: {}", self.lines)),
-            MoveTo(
-                preview_start_x + 1,
-                self.start_y + PREVIEW_HEIGHT as u16 + 6
-            ),
-            Print(format!("Level: {}", self.level)),
-            MoveTo(
-                preview_start_x + 1,
-                self.start_y + PREVIEW_HEIGHT as u16 + 10
-            ),
-            Print(format!(
-                "{:<9}: {:<}",
-                String::from("Left"),
-                String::from("h, ←")
-            )),
-            MoveTo(
-                preview_start_x + 1,
-                self.start_y + PREVIEW_HEIGHT as u16 + 11
-            ),
-            Print(format!(
-                "{:<9}: {}",
-                String::from("Right"),
-                String::from("l, →")
-            )),
-            MoveTo(
-                preview_start_x + 1,
-                self.start_y + PREVIEW_HEIGHT as u16 + 12
-            ),
-            Print(format!(
-                "{:<9}: {}",
-                String::from("Rotate"),
-                String::from("Space")
-            )),
-            MoveTo(
-                preview_start_x + 1,
-                self.start_y + PREVIEW_HEIGHT as u16 + 13
-            ),
-            Print(format!(
-                "{:<9}: {}",
-                String::from("Soft Drop"),
-                String::from("s, ↑")
-            )),
-            MoveTo(
-                preview_start_x + 1,
-                self.start_y + PREVIEW_HEIGHT as u16 + 14
-            ),
-            Print(format!(
-                "{:<9}: {}",
-                String::from("Hard Drop"),
-                String::from("j, ↓")
-            )),
-            MoveTo(
-                preview_start_x + 1,
-                self.start_y + PREVIEW_HEIGHT as u16 + 15
-            ),
-            Print(format!(
-                "{:<9}: {}",
-                String::from("Pause"),
-                String::from("p")
-            )),
-            ResetColor,
-            RestorePosition
-        )
-        .unwrap();
+            "Next",
+            next_start_x,
+            self.start_y,
+            NEXT_WIDTH as u16 * 3,
+            NEXT_HEIGHT as u16 + 1,
+        )?;
+
+        let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE + 1;
+        print_left_aligned_messages(
+            stdout,
+            "Stats",
+            Some(STATS_WIDTH.into()),
+            stats_start_x,
+            self.start_y + 1,
+            vec![
+                "",
+                format!("Score: {}", self.score).as_str(),
+                format!("Lines: {}", self.lines).as_str(),
+                format!("Level: {}", self.level).as_str(),
+                "",
+            ],
+        )?;
+
+        if let Some(_) = &self.stream {
+            print_left_aligned_messages(
+                stdout,
+                "2-Player",
+                Some(STATS_WIDTH.into()),
+                stats_start_x,
+                self.start_y + 9,
+                vec![
+                    "",
+                    format!(
+                        "Score: {} - {}",
+                        self.multiplayer_score.my_score, self.multiplayer_score.competitor_score,
+                    )
+                    .as_str(),
+                    "",
+                ],
+            )?;
+        }
+
+        print_left_aligned_messages(
+            stdout,
+            "Help",
+            None,
+            next_start_x,
+            self.start_y + NEXT_HEIGHT as u16 + 7,
+            vec![
+                "",
+                "Left: h, ←",
+                "Right: l, →",
+                "Rotate: Space",
+                "Soft Drop: s, ↑",
+                "Hard Drop: j, ↓",
+                "Pause: p",
+                "Quit: q",
+                "",
+            ],
+        )?;
+
+        Ok(())
     }
 
     fn handle_event(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
@@ -413,44 +383,18 @@ impl Game {
                                     self.play_grid.insert(PLAY_HEIGHT, new_row.clone());
                                 }
 
-                                self.render(stdout);
+                                self.render(stdout)?;
                             }
                             MessageType::Notification(msg) => {
                                 self.paused = !self.paused;
 
-                                for (y, row) in create_grid(12, 2).iter().enumerate() {
-                                    for (x, &ref cell) in row.iter().enumerate() {
-                                        let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16
-                                            - BLOCK_WIDTH as u16;
-                                        let screen_y = self.start_y + y as u16 + 9;
-                                        render_cell(stdout, screen_x, screen_y, cell.clone());
-                                    }
-                                }
-
-                                execute!(
+                                print_centered_messages(
                                     stdout,
-                                    SetForegroundColor(Color::White),
-                                    SetBackgroundColor(Color::Black),
-                                    SavePosition,
-                                    MoveTo(
-                                        self.start_x
-                                            + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
-                                                - msg.len() as u16)
-                                                / 2,
-                                        self.start_y + 10
-                                    ),
-                                    Print(msg),
-                                    MoveTo(
-                                        self.start_x
-                                            + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
-                                                - RESTART_CONTINUE_COMMAND.len() as u16)
-                                                / 2,
-                                        self.start_y + 11
-                                    ),
-                                    Print(RESTART_CONTINUE_COMMAND),
-                                    ResetColor,
-                                    RestorePosition
+                                    None,
+                                    vec![&msg, "", "(R)estart | (C)ontinue | (Q)uit"],
                                 )?;
+
+                                self.multiplayer_score.my_score += 1;
 
                                 loop {
                                     if poll(Duration::from_millis(10))? {
@@ -465,7 +409,7 @@ impl Game {
                                                 if kind == KeyEventKind::Press {
                                                     match code {
                                                         KeyCode::Enter | KeyCode::Char('c') => {
-                                                            self.render(stdout);
+                                                            self.render(stdout)?;
                                                             self.paused = false;
                                                             break;
                                                         }
@@ -490,7 +434,7 @@ impl Game {
                 }
 
                 if reset_needed {
-                    reset_game(self, stdout);
+                    reset_game(self, stdout)?;
                 }
 
                 if self.level <= MAX_LEVEL as u32
@@ -509,13 +453,13 @@ impl Game {
                     );
 
                     if can_move_down {
-                        tetromino.move_down(self, stdout);
+                        tetromino.move_down(self, stdout)?;
                         self.current_tetromino = tetromino;
                     } else {
-                        self.lock_and_move_to_next(&tetromino, stdout);
+                        self.lock_and_move_to_next(&tetromino, stdout)?;
                     }
 
-                    self.render_tetromino(stdout);
+                    self.render_tetromino(stdout)?;
 
                     drop_timer = Instant::now();
                 }
@@ -533,15 +477,15 @@ impl Game {
                                 let mut tetromino = self.current_tetromino.clone();
                                 match code {
                                     KeyCode::Char('h') | KeyCode::Left => {
-                                        tetromino.move_left(self, stdout);
+                                        tetromino.move_left(self, stdout)?;
                                         self.current_tetromino = tetromino;
                                     }
                                     KeyCode::Char('l') | KeyCode::Right => {
-                                        tetromino.move_right(self, stdout);
+                                        tetromino.move_right(self, stdout)?;
                                         self.current_tetromino = tetromino;
                                     }
                                     KeyCode::Char(' ') => {
-                                        tetromino.rotate(self, stdout);
+                                        tetromino.rotate(self, stdout)?;
                                         self.current_tetromino = tetromino;
                                     }
                                     KeyCode::Char('s') | KeyCode::Up => {
@@ -554,26 +498,26 @@ impl Game {
                                                 tetromino.position.row as i16 + 1,
                                                 tetromino.position.col as i16,
                                             ) {
-                                                tetromino.move_down(self, stdout);
+                                                tetromino.move_down(self, stdout)?;
                                                 self.current_tetromino = tetromino;
                                             } else {
-                                                self.lock_and_move_to_next(&tetromino, stdout);
+                                                self.lock_and_move_to_next(&tetromino, stdout)?;
                                             }
 
-                                            self.render_tetromino(stdout);
+                                            self.render_tetromino(stdout)?;
 
                                             soft_drop_timer = Instant::now();
                                         }
                                     }
                                     KeyCode::Char('j') | KeyCode::Down => {
-                                        tetromino.hard_drop(self, stdout);
-                                        self.lock_and_move_to_next(&tetromino, stdout);
+                                        tetromino.hard_drop(self, stdout)?;
+                                        self.lock_and_move_to_next(&tetromino, stdout)?;
                                     }
                                     KeyCode::Char('p') => {
                                         self.paused = !self.paused;
                                     }
                                     KeyCode::Char('q') => {
-                                        quit(stdout)?;
+                                        self.handle_quit_event(stdout)?;
                                     }
                                     _ => {}
                                 }
@@ -581,7 +525,7 @@ impl Game {
                         }
                         _ => {}
                     }
-                    self.render_tetromino(stdout);
+                    self.render_tetromino(stdout)?;
                 }
 
                 if self.is_game_over() {
@@ -592,40 +536,7 @@ impl Game {
     }
 
     fn handle_pause_event(&mut self, stdout: &mut io::Stdout) -> Result<()> {
-        let paused_grid = create_grid(8, 2);
-
-        for (y, row) in paused_grid.iter().enumerate() {
-            for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16 + BLOCK_WIDTH as u16;
-                let screen_y = self.start_y + y as u16 + 9;
-                render_cell(stdout, screen_x, screen_y, cell.clone());
-            }
-        }
-
-        execute!(
-            stdout,
-            SetForegroundColor(Color::White),
-            SetBackgroundColor(Color::Black),
-            SavePosition,
-            MoveTo(
-                self.start_x
-                    + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16 - PAUSED_MESSAGE.len() as u16)
-                        / 2,
-                self.start_y + 10
-            ),
-            Print(PAUSED_MESSAGE),
-            MoveTo(
-                self.start_x
-                    + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
-                        - CONTINUE_COMMAND.len() as u16)
-                        / 2,
-                self.start_y + 11
-            ),
-            Print(CONTINUE_COMMAND),
-            ResetColor,
-            RestorePosition
-        )
-        .unwrap();
+        print_centered_messages(stdout, None, vec!["PAUSED", "", "(C)ontinue | (Q)uit"])?;
 
         loop {
             if poll(Duration::from_millis(10))? {
@@ -640,12 +551,47 @@ impl Game {
                         if kind == KeyEventKind::Press {
                             match code {
                                 KeyCode::Enter | KeyCode::Char('c') => {
-                                    self.render(stdout);
+                                    self.render(stdout)?;
                                     self.paused = false;
                                     break;
                                 }
                                 KeyCode::Char('q') => {
                                     quit(stdout)?;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_quit_event(&mut self, stdout: &mut io::Stdout) -> Result<()> {
+        print_centered_messages(stdout, None, vec!["QUIT?", "", "(Y)es | (N)o"])?;
+
+        loop {
+            if poll(Duration::from_millis(10))? {
+                let event = read()?;
+                match event {
+                    Event::Key(KeyEvent {
+                        code,
+                        modifiers: _,
+                        kind,
+                        state: _,
+                    }) => {
+                        if kind == KeyEventKind::Press {
+                            match code {
+                                KeyCode::Enter | KeyCode::Char('y') => {
+                                    quit(stdout)?;
+                                }
+                                KeyCode::Esc | KeyCode::Char('n') => {
+                                    self.render(stdout)?;
+                                    self.paused = false;
+                                    break;
                                 }
                                 _ => {}
                             }
@@ -681,7 +627,7 @@ impl Game {
         true
     }
 
-    fn clear_tetromino(&mut self, stdout: &mut std::io::Stdout) {
+    fn clear_tetromino(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
         let tetromino = &self.current_tetromino;
         for (row_index, row) in tetromino.states[tetromino.current_state].iter().enumerate() {
             for (col_index, &ref cell) in row.iter().enumerate() {
@@ -700,19 +646,26 @@ impl Game {
                         Print(SPACE),
                         ResetColor,
                         RestorePosition
-                    )
-                    .unwrap();
+                    )?;
                 }
             }
         }
+
+        Ok(())
     }
 
-    fn lock_and_move_to_next(&mut self, tetromino: &Tetromino, stdout: &mut io::Stdout) {
-        self.lock_tetromino(tetromino, stdout);
+    fn lock_and_move_to_next(
+        &mut self,
+        tetromino: &Tetromino,
+        stdout: &mut io::Stdout,
+    ) -> Result<()> {
+        self.lock_tetromino(tetromino, stdout)?;
         self.move_to_next();
+
+        Ok(())
     }
 
-    fn lock_tetromino(&mut self, tetromino: &Tetromino, stdout: &mut io::Stdout) {
+    fn lock_tetromino(&mut self, tetromino: &Tetromino, stdout: &mut io::Stdout) -> Result<()> {
         for (ty, row) in tetromino.get_cells().iter().enumerate() {
             for (tx, &ref cell) in row.iter().enumerate() {
                 if cell.symbols == SQUARE_BRACKETS {
@@ -724,7 +677,9 @@ impl Game {
             }
         }
 
-        self.clear_filled_rows(stdout);
+        self.clear_filled_rows(stdout)?;
+
+        Ok(())
     }
 
     fn move_to_next(&mut self) {
@@ -735,7 +690,7 @@ impl Game {
         self.next_tetromino = Tetromino::new(true);
     }
 
-    fn clear_filled_rows(&mut self, stdout: &mut io::Stdout) {
+    fn clear_filled_rows(&mut self, stdout: &mut io::Stdout) -> Result<()> {
         let mut filled_rows: Vec<usize> = Vec::new();
 
         for row_index in (1..=PLAY_HEIGHT).rev() {
@@ -783,10 +738,12 @@ impl Game {
             }
         }
 
-        self.render(stdout);
+        self.render(stdout)?;
+
+        Ok(())
     }
 
-    fn render_tetromino(&self, stdout: &mut std::io::Stdout) {
+    fn render_tetromino(&self, stdout: &mut std::io::Stdout) -> Result<()> {
         let current_tetromino = &self.current_tetromino;
         for (row_index, row) in current_tetromino.states[current_tetromino.current_state]
             .iter()
@@ -815,8 +772,7 @@ impl Game {
                             Print(cell.symbols),
                             ResetColor,
                             RestorePosition,
-                        )
-                        .unwrap();
+                        )?;
                     }
                 }
             }
@@ -833,17 +789,22 @@ impl Game {
 
                 if cell.symbols != SPACE {
                     if grid_x >= 1
-                        && grid_x <= PREVIEW_WIDTH
+                        && grid_x <= NEXT_WIDTH
                         && grid_y >= 1
-                        && grid_y <= PREVIEW_HEIGHT
-                        && self.preview_grid[grid_y][grid_x].symbols == SPACE
+                        && grid_y <= NEXT_HEIGHT
+                        && self.next_grid[grid_y][grid_x].symbols == SPACE
                     {
                         execute!(
                             stdout,
                             SavePosition,
                             MoveTo(
                                 self.start_x
-                                    + (PLAY_WIDTH + 2 + grid_x) as u16 * BLOCK_WIDTH as u16,
+                                    + (PLAY_WIDTH + grid_x) as u16 * BLOCK_WIDTH as u16
+                                    + 4
+                                    + tetromino_width(
+                                        &next_tetromino.states[next_tetromino.current_state]
+                                    ) as u16
+                                        % 2,
                                 self.start_y + grid_y as u16
                             ),
                             SetForegroundColor(cell.color),
@@ -851,12 +812,13 @@ impl Game {
                             Print(cell.symbols),
                             ResetColor,
                             RestorePosition,
-                        )
-                        .unwrap();
+                        )?;
                     }
                 }
             }
         }
+
+        Ok(())
     }
 
     fn is_game_over(&mut self) -> bool {
@@ -870,10 +832,8 @@ impl Game {
 
     fn handle_game_over(&mut self, stdout: &mut io::Stdout) -> Result<()> {
         if let Some(stream) = &mut self.stream {
-            send_message(
-                stream,
-                MessageType::Notification(YOU_WIN_MESSAGE.to_string()),
-            );
+            send_message(stream, MessageType::Notification("YOU WIN!".to_string()));
+            self.multiplayer_score.competitor_score += 1;
         }
 
         if self.score == 0 {
@@ -906,59 +866,21 @@ impl Game {
     }
 
     fn show_high_scores(&mut self, stdout: &mut io::Stdout) -> Result<()> {
-        let game_over_grid = create_grid(PLAY_WIDTH + 2, PLAY_WIDTH);
-        let game_over_start_row = 5;
-
-        for (y, row) in game_over_grid.iter().enumerate() {
-            for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16 - BLOCK_WIDTH as u16;
-                let screen_y = self.start_y + y as u16 + game_over_start_row;
-                render_cell(stdout, screen_x, screen_y, cell.clone());
-            }
-        }
-
-        execute!(
+        print_centered_messages(
             stdout,
-            SavePosition,
-            MoveTo(
-                self.start_x
-                    + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
-                        - GAME_OVER_MESSAGE.len() as u16)
-                        / 2,
-                self.start_y + game_over_start_row + 1
-            ),
-            SetForegroundColor(Color::White),
-            SetBackgroundColor(Color::Black),
-            Print(GAME_OVER_MESSAGE),
-            ResetColor,
-            RestorePosition,
-        )?;
-
-        let high_scores_grid = create_grid(PLAY_WIDTH, 6);
-
-        for (y, row) in high_scores_grid.iter().enumerate() {
-            for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16;
-                let screen_y = self.start_y + y as u16 + game_over_start_row + 2;
-                render_cell(stdout, screen_x, screen_y, cell.clone());
-            }
-        }
-
-        execute!(
-            stdout,
-            SavePosition,
-            MoveTo(
-                self.start_x
-                    + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
-                        - HIGH_SCORES_MESSAGE.len() as u16)
-                        / 2,
-                self.start_y + game_over_start_row + 3
-            ),
-            SetForegroundColor(Color::White),
-            SetBackgroundColor(Color::Black),
-            Print(HIGH_SCORES_MESSAGE),
-            ResetColor,
-            RestorePosition,
+            Some((PLAY_WIDTH + 2) * BLOCK_WIDTH).into(),
+            vec![
+                "GAME OVER",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "(R)estart | (Q)uit",
+            ],
         )?;
 
         {
@@ -969,44 +891,21 @@ impl Game {
                 Ok((row.get_unwrap::<_, String>(0), row.get_unwrap::<_, i64>(1)))
             })?;
 
-            for (index, player) in players.enumerate() {
-                let (name, score) = player.unwrap();
+            let mut players_str: Vec<String> = Vec::new();
+            for (_, player) in players.enumerate() {
+                let (name, score) = player?;
+                let formatted_str =
+                    format!("{:<width$}{:>9}", name, score, width = MAX_NAME_LENGTH + 3);
 
-                execute!(
-                    stdout,
-                    SavePosition,
-                    MoveTo(
-                        self.start_x + BLOCK_WIDTH as u16 * 2,
-                        self.start_y + index as u16 + game_over_start_row + 4,
-                    ),
-                    SetForegroundColor(Color::White),
-                    SetBackgroundColor(Color::Black),
-                    Print(format!(
-                        "{:<width$}{:>9}",
-                        name,
-                        score,
-                        width = MAX_LENGTH_NAME + 3
-                    )),
-                    ResetColor,
-                    RestorePosition,
-                )?;
+                players_str.push(formatted_str)
             }
 
-            execute!(
+            players_str.insert(0, "HIGH SCORES".to_string());
+
+            print_centered_messages(
                 stdout,
-                SavePosition,
-                MoveTo(
-                    self.start_x
-                        + ((PLAY_WIDTH as u16 + 2) * BLOCK_WIDTH as u16
-                            - RESTART_COMMAND.len() as u16)
-                            / 2,
-                    self.start_y + game_over_start_row + 10
-                ),
-                SetForegroundColor(Color::White),
-                SetBackgroundColor(Color::Black),
-                Print(RESTART_COMMAND),
-                ResetColor,
-                RestorePosition,
+                None,
+                players_str.iter().map(|s| s.as_str()).collect(),
             )?;
         }
 
@@ -1026,7 +925,7 @@ impl Game {
                                     quit(stdout)?;
                                 }
                                 KeyCode::Char('r') => {
-                                    reset_game(self, stdout);
+                                    reset_game(self, stdout)?;
                                 }
                                 _ => {}
                             }
@@ -1039,34 +938,26 @@ impl Game {
     }
 
     fn new_high_score(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
-        let new_high_score_grid = create_grid(PLAY_WIDTH + 2, 4);
-
-        for (y, row) in new_high_score_grid.iter().enumerate() {
-            for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16 - BLOCK_WIDTH as u16;
-                let screen_y = self.start_y + y as u16 + 8;
-                render_cell(stdout, screen_x, screen_y, cell.clone());
-            }
-        }
-
-        print_message(
+        print_centered_messages(
             stdout,
-            PLAY_WIDTH as u16,
-            4,
-            0,
-            String::from("NEW HIGH SCORE!"),
-        );
-        print_message(stdout, PLAY_WIDTH as u16, 4, 1, format!("{}", self.score));
+            None,
+            vec![
+                "NEW HIGH SCORE!",
+                &self.score.to_string(),
+                &format!("{}{}", ENTER_YOUR_NAME_MESSAGE, " ".repeat(MAX_NAME_LENGTH)),
+            ],
+        )?;
 
         let mut name = String::new();
         let mut cursor_position: usize = 0;
 
-        let (_, term_height) = terminal::size()?;
+        let (term_width, term_height) = terminal::size()?;
         stdout.execute(MoveTo(
-            self.start_x + BLOCK_WIDTH as u16 + 1,
-            (term_height - 3) / 2 + 2,
+            (term_width - ENTER_YOUR_NAME_MESSAGE.len() as u16 - MAX_NAME_LENGTH as u16) / 2
+                + ENTER_YOUR_NAME_MESSAGE.len() as u16,
+            term_height / 2 - 3 / 2 + 2,
         ))?;
-        stdout.write(format!("Enter your name: {}", name).as_bytes())?;
+        stdout.write(format!("{}", name).as_bytes())?;
         stdout.execute(cursor::Show)?;
         stdout.flush()?;
 
@@ -1122,7 +1013,7 @@ impl Game {
                                     }
                                 }
                                 KeyCode::Char(c) => {
-                                    if name.len() <= MAX_LENGTH_NAME {
+                                    if name.len() < MAX_NAME_LENGTH {
                                         name.insert(cursor_position, c);
                                         cursor_position += 1;
                                         print!("{}", &name[cursor_position - 1..]);
@@ -1144,14 +1035,13 @@ impl Game {
     }
 }
 
-fn reset_game(game: &mut Game, stdout: &mut io::Stdout) {
+fn reset_game(game: &mut Game, stdout: &mut io::Stdout) -> Result<()> {
     game.reset();
-    game.render(stdout);
+    game.render(stdout)?;
 
-    match game.handle_event(stdout) {
-        Ok(_) => {}
-        Err(err) => eprintln!("Error: {}", err),
-    }
+    game.handle_event(stdout)?;
+
+    Ok(())
 }
 
 fn quit(stdout: &mut io::Stdout) -> Result<()> {
@@ -1173,7 +1063,64 @@ fn create_grid(width: usize, height: usize) -> Vec<Vec<Cell>> {
     grid
 }
 
-fn render_cell(stdout: &mut std::io::Stdout, x: u16, y: u16, cell: Cell) {
+fn render_frame(
+    stdout: &mut io::Stdout,
+    title: &str,
+    start_x: u16,
+    start_y: u16,
+    width: u16,
+    height: u16,
+) -> Result<()> {
+    // Print the top border
+    let left = (width - title.len() as u16 - 2) / 2;
+    execute!(
+        stdout,
+        SetForegroundColor(Color::White),
+        SetBackgroundColor(Color::Black),
+        SavePosition,
+        MoveTo(start_x, start_y),
+        Print(format!(
+            "|{} {} {}|",
+            "-".repeat(left as usize),
+            title,
+            "-".repeat(width as usize - left as usize - title.len() - 2)
+        )),
+        ResetColor,
+        RestorePosition,
+    )?;
+
+    // Print the left and right borders
+    for index in 1..height {
+        execute!(
+            stdout,
+            SetForegroundColor(Color::White),
+            SetBackgroundColor(Color::Black),
+            SavePosition,
+            MoveTo(start_x, start_y + index as u16),
+            Print(format!("|{}|", " ".repeat(width as usize))),
+            ResetColor,
+            RestorePosition,
+        )?;
+    }
+
+    // Print the bottom border
+    execute!(
+        stdout,
+        SetForegroundColor(Color::White),
+        SetBackgroundColor(Color::Black),
+        SavePosition,
+        MoveTo(start_x, start_y + height),
+        Print(format!("{}{}{}", "|", ("-").repeat(width as usize), "|")),
+        ResetColor,
+        RestorePosition,
+    )?;
+
+    stdout.flush()?;
+
+    Ok(())
+}
+
+fn render_cell(stdout: &mut std::io::Stdout, x: u16, y: u16, cell: Cell) -> Result<()> {
     execute!(
         stdout,
         SavePosition,
@@ -1183,8 +1130,9 @@ fn render_cell(stdout: &mut std::io::Stdout, x: u16, y: u16, cell: Cell) {
         Print(cell.symbols),
         ResetColor,
         RestorePosition,
-    )
-    .unwrap();
+    )?;
+
+    Ok(())
 }
 
 impl Tetromino {
@@ -1322,7 +1270,7 @@ impl Tetromino {
         let mut col = (PLAY_WIDTH + 2 - tetromino_with) / 2;
         if is_next {
             row = 2;
-            col = (PREVIEW_WIDTH + 4 - tetromino_with) / 2;
+            col = (NEXT_WIDTH + 4 - tetromino_with) / 2;
         }
 
         Tetromino {
@@ -1336,21 +1284,25 @@ impl Tetromino {
         &self.states[self.current_state]
     }
 
-    fn move_left(&mut self, game: &mut Game, stdout: &mut std::io::Stdout) {
+    fn move_left(&mut self, game: &mut Game, stdout: &mut std::io::Stdout) -> Result<()> {
         if game.can_move(self, self.position.row as i16, self.position.col as i16 - 1) {
-            game.clear_tetromino(stdout);
+            game.clear_tetromino(stdout)?;
             self.position.col -= 1;
         }
+
+        Ok(())
     }
 
-    fn move_right(&mut self, game: &mut Game, stdout: &mut std::io::Stdout) {
+    fn move_right(&mut self, game: &mut Game, stdout: &mut std::io::Stdout) -> Result<()> {
         if game.can_move(self, self.position.row as i16, self.position.col as i16 + 1) {
-            game.clear_tetromino(stdout);
+            game.clear_tetromino(stdout)?;
             self.position.col += 1;
         }
+
+        Ok(())
     }
 
-    fn rotate(&mut self, game: &mut Game, stdout: &mut std::io::Stdout) {
+    fn rotate(&mut self, game: &mut Game, stdout: &mut std::io::Stdout) -> Result<()> {
         let next_state = (self.current_state + 1) % (self.states.len());
 
         let mut temp_tetromino = self.clone();
@@ -1361,37 +1313,47 @@ impl Tetromino {
             self.position.row as i16,
             self.position.col as i16,
         ) {
-            game.clear_tetromino(stdout);
+            game.clear_tetromino(stdout)?;
             self.current_state = next_state;
         }
+
+        Ok(())
     }
 
-    fn move_down(&mut self, game: &mut Game, stdout: &mut std::io::Stdout) {
+    fn move_down(&mut self, game: &mut Game, stdout: &mut std::io::Stdout) -> Result<()> {
         if game.can_move(self, self.position.row as i16 + 1, self.position.col as i16) {
-            game.clear_tetromino(stdout);
+            game.clear_tetromino(stdout)?;
             self.position.row += 1;
         }
+
+        Ok(())
     }
 
-    fn hard_drop(&mut self, game: &mut Game, stdout: &mut std::io::Stdout) {
+    fn hard_drop(&mut self, game: &mut Game, stdout: &mut std::io::Stdout) -> Result<()> {
         while game.can_move(self, self.position.row as i16 + 1, self.position.col as i16) {
-            game.clear_tetromino(stdout);
+            game.clear_tetromino(stdout)?;
             self.position.row += 1;
         }
+
+        Ok(())
     }
 }
 
 fn tetromino_width(tetromino: &Vec<Vec<Cell>>) -> usize {
-    let mut max_width = 0;
+    let mut width = 0;
 
-    for row in tetromino.iter() {
-        let row_width = row.iter().filter(|&cell| cell.symbols != SPACE).count();
-        if row_width > max_width {
-            max_width = row_width;
+    for col in 0..tetromino[0].len() {
+        let col_width = tetromino
+            .iter()
+            .filter(|row| row[col].symbols != SPACE)
+            .count();
+
+        if col_width > 0 {
+            width += 1
         }
     }
 
-    max_width
+    width
 }
 
 #[derive(Parser, Debug)]
@@ -1419,7 +1381,7 @@ fn main() -> Result<()> {
     if args.multiplayer {
         if args.server_address == None {
             let listener = TcpListener::bind("0.0.0.0:8080")?;
-            let my_local_ip = local_ip().unwrap();
+            let my_local_ip = local_ip()?;
             println!(
                 "Server started. Please invite your competitor to connect to {}.",
                 format!("{}:8080", my_local_ip)
@@ -1430,31 +1392,31 @@ fn main() -> Result<()> {
 
             let mut stream_clone = stream.try_clone()?;
             let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
-            let mut game = Game::new(conn, Some(stream), Some(receiver));
+            let mut game = Game::new(conn, Some(stream), Some(receiver))?;
 
             thread::spawn(move || {
                 receive_message(&mut stream_clone, sender);
             });
 
-            game.start();
+            game.start()?;
         } else {
             if let Some(server_address) = args.server_address {
                 let stream = TcpStream::connect(server_address)?;
 
                 let mut stream_clone = stream.try_clone()?;
                 let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
-                let mut game = Game::new(conn, Some(stream), Some(receiver));
+                let mut game = Game::new(conn, Some(stream), Some(receiver))?;
 
                 thread::spawn(move || {
                     receive_message(&mut stream_clone, sender);
                 });
 
-                game.start();
+                game.start()?;
             }
         }
     } else {
-        let mut game = Game::new(conn, None, None);
-        game.start();
+        let mut game = Game::new(conn, None, None)?;
+        game.start()?;
     }
 
     Ok(())
@@ -1491,21 +1453,194 @@ fn open() -> RusqliteResult<Connection, Box<dyn Error>> {
     Ok(conn)
 }
 
-fn print_message(stdout: &mut io::Stdout, _grid_width: u16, grid_height: u16, n: u16, msg: String) {
-    let (term_width, term_height) = terminal::size().unwrap();
-    let start_x = (term_width - msg.len() as u16) / 2;
-    let start_y = (term_height - grid_height) / 2;
+const MARGIN: usize = BLOCK_WIDTH;
+
+fn print_centered_messages(
+    stdout: &mut io::Stdout,
+    width: Option<usize>,
+    messages: Vec<&str>,
+) -> Result<()> {
+    let (term_width, term_height) = terminal::size()?;
+    let start_y = term_height / 2 - messages.len() as u16 / 2;
+
+    let longest_length = find_longest_message_length(&messages);
+
+    let frame_width: usize;
+    if let Some(value) = width {
+        frame_width = value;
+    } else {
+        frame_width = longest_length + MARGIN * 2;
+    }
+
+    let start_x = (term_width - frame_width as u16 - 2) / 2;
+
+    // Print the top border
     execute!(
         stdout,
-        SavePosition,
-        MoveTo(start_x, start_y + n),
         SetForegroundColor(Color::White),
         SetBackgroundColor(Color::Black),
-        Print(msg),
+        SavePosition,
+        MoveTo(start_x, start_y - 1),
+        Print(format!("{}{}{}", "|", ("-").repeat(frame_width), "|")),
         ResetColor,
         RestorePosition,
-    )
-    .unwrap();
+    )?;
+
+    // Print the messages with borders
+    for (index, message) in messages.iter().enumerate() {
+        let left = (frame_width - message.len()) / 2;
+        execute!(
+            stdout,
+            SetForegroundColor(Color::White),
+            SetBackgroundColor(Color::Black),
+            SavePosition,
+            MoveTo(start_x, start_y + index as u16),
+            Print(format!(
+                "|{}{}{}|",
+                " ".repeat(left as usize),
+                message,
+                " ".repeat(frame_width - left - message.len())
+            )),
+            ResetColor,
+            RestorePosition,
+        )?;
+    }
+
+    // Print the bottom border
+    let bottom_border_y = start_y + messages.len() as u16;
+    execute!(
+        stdout,
+        SetForegroundColor(Color::White),
+        SetBackgroundColor(Color::Black),
+        SavePosition,
+        MoveTo(start_x, bottom_border_y),
+        Print(format!("{}{}{}", "|", ("-").repeat(frame_width), "|")),
+        ResetColor,
+        RestorePosition,
+    )?;
+
+    stdout.flush()?;
+
+    Ok(())
+}
+
+fn find_longest_message_length(messages: &[&str]) -> usize {
+    messages
+        .iter()
+        .map(|message| message.len())
+        .max()
+        .unwrap_or(0)
+}
+
+fn print_left_aligned_messages(
+    stdout: &mut io::Stdout,
+    title: &str,
+    width: Option<usize>,
+    start_x: u16,
+    start_y: u16,
+    messages: Vec<&str>,
+) -> Result<()> {
+    let (longest_key_length, longest_value_length) = find_longest_key_value_length(&messages);
+    let frame_width: usize;
+    if let Some(value) = width {
+        frame_width = value;
+    } else {
+        frame_width = longest_key_length + longest_value_length + 3;
+    }
+
+    // Print the top border
+    let left = (frame_width - title.len() - 2) / 2;
+    execute!(
+        stdout,
+        SetForegroundColor(Color::White),
+        SetBackgroundColor(Color::Black),
+        SavePosition,
+        MoveTo(start_x, start_y - 1),
+        Print(format!(
+            "{}{} {} {}{}",
+            "|",
+            ("-").repeat(left),
+            title,
+            ("-").repeat(frame_width - left - title.len() - 2),
+            "|"
+        )),
+        ResetColor,
+        RestorePosition,
+    )?;
+
+    // Print the messages with borders
+    for (index, message) in messages.iter().enumerate() {
+        if message.len() == 0 {
+            execute!(
+                stdout,
+                SetForegroundColor(Color::White),
+                SetBackgroundColor(Color::Black),
+                SavePosition,
+                MoveTo(start_x, start_y + index as u16),
+                Print(format!("|{}|", " ".repeat(frame_width))),
+                ResetColor,
+                RestorePosition,
+            )?;
+        } else {
+            let parts: Vec<&str> = message.split(':').collect();
+
+            let right_padding_spaces: String;
+            if let Some(value) = width {
+                right_padding_spaces = " ".repeat(value - 2 - message.chars().count());
+            } else {
+                right_padding_spaces = " ".repeat(longest_value_length - parts[1].chars().count());
+            }
+            execute!(
+                stdout,
+                SetForegroundColor(Color::White),
+                SetBackgroundColor(Color::Black),
+                SavePosition,
+                MoveTo(start_x, start_y + index as u16),
+                Print(format!(
+                    "| {:<width$}:{} {}|",
+                    String::from(parts[0]),
+                    String::from(parts[1]),
+                    right_padding_spaces,
+                    width = longest_key_length,
+                )),
+                ResetColor,
+                RestorePosition,
+            )?;
+        }
+    }
+
+    // Print the bottom border
+    let bottom_border_y = start_y + messages.len() as u16;
+    execute!(
+        stdout,
+        SetForegroundColor(Color::White),
+        SetBackgroundColor(Color::Black),
+        SavePosition,
+        MoveTo(start_x, bottom_border_y),
+        Print(format!("{}{}{}", "|", ("-").repeat(frame_width), "|")),
+        ResetColor,
+        RestorePosition,
+    )?;
+
+    stdout.flush()?;
+
+    Ok(())
+}
+
+fn find_longest_key_value_length(messages: &Vec<&str>) -> (usize, usize) {
+    let mut longest_key_length = 0;
+    let mut longest_value_length = 0;
+
+    for message in messages {
+        if message.len() == 0 {
+            continue;
+        }
+        let parts: Vec<&str> = message.split(':').collect();
+        longest_key_length = longest_key_length.max(parts[0].len());
+        longest_value_length = longest_value_length.max(parts[1].chars().count());
+    }
+
+    (longest_key_length, longest_value_length)
 }
 
 fn send_message(stream: &mut TcpStream, message: MessageType) {
@@ -1515,7 +1650,7 @@ fn send_message(stream: &mut TcpStream, message: MessageType) {
     };
 
     if let Err(err) = stream.write_all(message_string.as_bytes()) {
-        eprintln!("Error sending message: {}", err);
+        eprintln!("Error writing message: {}", err);
     }
 }
 
@@ -1527,11 +1662,15 @@ fn receive_message(stream: &mut TcpStream, sender: Sender<MessageType>) {
                 let msg = String::from_utf8_lossy(&buffer[0..n]);
                 if msg.starts_with(PREFIX_CLEARED_ROWS) {
                     if let Ok(rows) = msg.trim_start_matches(PREFIX_CLEARED_ROWS).parse() {
-                        sender.send(MessageType::ClearedRows(rows)).unwrap();
+                        if let Err(err) = sender.send(MessageType::ClearedRows(rows)) {
+                            eprintln!("Error sending number of cleared rows: {}", err)
+                        }
                     }
                 } else if msg.starts_with(PREFIX_NOTIFICATION) {
                     let msg = msg.trim_start_matches(PREFIX_NOTIFICATION).to_string();
-                    sender.send(MessageType::Notification(msg)).unwrap();
+                    if let Err(err) = sender.send(MessageType::Notification(msg)) {
+                        eprintln!("Error sending notification message: {}", err)
+                    }
                 }
             }
             Ok(_) | Err(_) => {
