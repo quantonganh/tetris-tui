@@ -1,6 +1,6 @@
 [package]
 name = "tetris-tui"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2021"
 authors = ["Quan Tong <quantonganh@email.com>"]
 license = "MIT OR Apache-2.0"
