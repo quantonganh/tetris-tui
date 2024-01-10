@@ -952,23 +952,7 @@ impl Game {
     }
 
     fn show_high_scores(&mut self, stdout: &mut io::Stdout) -> Result<()> {
-        print_centered_messages(
-            stdout,
-            Some((PLAY_WIDTH + 2) * BLOCK_WIDTH).into(),
-            vec![
-                "GAME OVER",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "(R)estart | (Q)uit",
-            ],
-        )?;
-
+        let mut players_str: Vec<String> = Vec::new();
         {
             let mut stmt = self.conn.prepare(
                 "SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 5",
@@ -977,7 +961,6 @@ impl Game {
                 Ok((row.get_unwrap::<_, String>(0), row.get_unwrap::<_, i64>(1)))
             })?;
 
-            let mut players_str: Vec<String> = Vec::new();
             for (_, player) in players.enumerate() {
                 let (name, score) = player?;
                 let formatted_str =
@@ -985,6 +968,18 @@ impl Game {
 
                 players_str.push(formatted_str)
             }
+        }
+
+        if players_str.len() > 0 {
+            print_centered_messages(
+                stdout,
+                Some((PLAY_WIDTH + 2) * BLOCK_WIDTH).into(),
+                vec!["GAME OVER"]
+                    .into_iter()
+                    .chain(vec![""; players_str.len() + 3])
+                    .chain(vec!["(R)estart | (Q)uit"].into_iter())
+                    .collect::<Vec<&str>>(),
+            )?;
 
             players_str.insert(0, "HIGH SCORES".to_string());
 
@@ -993,6 +988,8 @@ impl Game {
                 None,
                 players_str.iter().map(|s| s.as_str()).collect(),
             )?;
+        } else {
+            print_centered_messages(stdout, None, vec!["GAME OVER", "", "(R)estart | (Q)uit"])?;
         }
 
         loop {
