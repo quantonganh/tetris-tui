@@ -350,6 +350,51 @@ impl Game {
         Ok(())
     }
 
+    fn render_changed_portions(&self, stdout: &mut std::io::Stdout) -> Result<()> {
+        for (y, row) in self.play_grid.iter().enumerate() {
+            for (x, &ref cell) in row.iter().enumerate() {
+                let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16;
+                let screen_y = self.start_y + y as u16;
+                render_cell(stdout, screen_x, screen_y, cell.clone())?;
+            }
+        }
+
+        let next_start_x = self.start_x + PLAY_WIDTH as u16 * BLOCK_WIDTH as u16 + 3 + DISTANCE;
+        for i in 1..NEXT_HEIGHT - 1 {
+            execute!(
+                stdout,
+                SetForegroundColor(Color::White),
+                SetBackgroundColor(Color::Black),
+                SavePosition,
+                MoveTo(
+                    next_start_x + 1 + BLOCK_WIDTH as u16,
+                    self.start_y + 1 + i as u16
+                ),
+                Print(" ".repeat(4 * BLOCK_WIDTH)),
+                ResetColor,
+                RestorePosition,
+            )?;
+        }
+
+        let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE + 1;
+        execute!(
+            stdout,
+            SetForegroundColor(Color::White),
+            SetBackgroundColor(Color::Black),
+            SavePosition,
+            MoveTo(stats_start_x + 2 + "Score: ".len() as u16, self.start_y + 2),
+            Print(self.score),
+            MoveTo(stats_start_x + 2 + "Lines: ".len() as u16, self.start_y + 3),
+            Print(self.lines),
+            MoveTo(stats_start_x + 2 + "Level: ".len() as u16, self.start_y + 4),
+            Print(self.level),
+            ResetColor,
+            RestorePosition,
+        )?;
+
+        Ok(())
+    }
+
     fn handle_event(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
         let mut drop_timer = Instant::now();
         let mut soft_drop_timer = Instant::now();
@@ -383,7 +428,7 @@ impl Game {
                                     self.play_grid.insert(PLAY_HEIGHT, new_row.clone());
                                 }
 
-                                self.render(stdout)?;
+                                self.render_changed_portions(stdout)?;
                             }
                             MessageType::Notification(msg) => {
                                 self.paused = !self.paused;
@@ -395,6 +440,27 @@ impl Game {
                                 )?;
 
                                 self.multiplayer_score.my_score += 1;
+
+                                let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE + 1;
+                                if let Some(_) = &self.stream {
+                                    execute!(
+                                        stdout,
+                                        SetForegroundColor(Color::White),
+                                        SetBackgroundColor(Color::Black),
+                                        SavePosition,
+                                        MoveTo(
+                                            stats_start_x + 2 + "Score: ".len() as u16,
+                                            self.start_y + 10
+                                        ),
+                                        Print(format!(
+                                            "{} - {}",
+                                            self.multiplayer_score.my_score,
+                                            self.multiplayer_score.competitor_score
+                                        )),
+                                        ResetColor,
+                                        RestorePosition,
+                                    )?;
+                                }
 
                                 loop {
                                     if poll(Duration::from_millis(10))? {
@@ -409,7 +475,7 @@ impl Game {
                                                 if kind == KeyEventKind::Press {
                                                     match code {
                                                         KeyCode::Enter | KeyCode::Char('c') => {
-                                                            self.render(stdout)?;
+                                                            self.render_changed_portions(stdout)?;
                                                             self.paused = false;
                                                             break;
                                                         }
@@ -551,7 +617,7 @@ impl Game {
                         if kind == KeyEventKind::Press {
                             match code {
                                 KeyCode::Enter | KeyCode::Char('c') => {
-                                    self.render(stdout)?;
+                                    self.render_changed_portions(stdout)?;
                                     self.paused = false;
                                     break;
                                 }
@@ -589,7 +655,7 @@ impl Game {
                                     quit(stdout)?;
                                 }
                                 KeyCode::Esc | KeyCode::Char('n') => {
-                                    self.render(stdout)?;
+                                    self.render_changed_portions(stdout)?;
                                     self.paused = false;
                                     break;
                                 }
@@ -738,7 +804,7 @@ impl Game {
             }
         }
 
-        self.render(stdout)?;
+        self.render_changed_portions(stdout)?;
 
         Ok(())
     }
@@ -834,6 +900,26 @@ impl Game {
         if let Some(stream) = &mut self.stream {
             send_message(stream, MessageType::Notification("YOU WIN!".to_string()));
             self.multiplayer_score.competitor_score += 1;
+
+            let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE + 1;
+            if let Some(_) = &self.stream {
+                execute!(
+                    stdout,
+                    SetForegroundColor(Color::White),
+                    SetBackgroundColor(Color::Black),
+                    SavePosition,
+                    MoveTo(
+                        stats_start_x + 2 + "Score: ".len() as u16,
+                        self.start_y + 10
+                    ),
+                    Print(format!(
+                        "{} - {}",
+                        self.multiplayer_score.my_score, self.multiplayer_score.competitor_score
+                    )),
+                    ResetColor,
+                    RestorePosition,
+                )?;
+            }
         }
 
         if self.score == 0 {
@@ -866,23 +952,7 @@ impl Game {
     }
 
     fn show_high_scores(&mut self, stdout: &mut io::Stdout) -> Result<()> {
-        print_centered_messages(
-            stdout,
-            Some((PLAY_WIDTH + 2) * BLOCK_WIDTH).into(),
-            vec![
-                "GAME OVER",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "(R)estart | (Q)uit",
-            ],
-        )?;
-
+        let mut players_str: Vec<String> = Vec::new();
         {
             let mut stmt = self.conn.prepare(
                 "SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 5",
@@ -891,7 +961,6 @@ impl Game {
                 Ok((row.get_unwrap::<_, String>(0), row.get_unwrap::<_, i64>(1)))
             })?;
 
-            let mut players_str: Vec<String> = Vec::new();
             for (_, player) in players.enumerate() {
                 let (name, score) = player?;
                 let formatted_str =
@@ -899,6 +968,18 @@ impl Game {
 
                 players_str.push(formatted_str)
             }
+        }
+
+        if players_str.len() > 0 {
+            print_centered_messages(
+                stdout,
+                Some((PLAY_WIDTH + 2) * BLOCK_WIDTH).into(),
+                vec!["GAME OVER"]
+                    .into_iter()
+                    .chain(vec![""; players_str.len() + 3])
+                    .chain(vec!["(R)estart | (Q)uit"].into_iter())
+                    .collect::<Vec<&str>>(),
+            )?;
 
             players_str.insert(0, "HIGH SCORES".to_string());
 
@@ -907,6 +988,8 @@ impl Game {
                 None,
                 players_str.iter().map(|s| s.as_str()).collect(),
             )?;
+        } else {
+            print_centered_messages(stdout, None, vec!["GAME OVER", "", "(R)estart | (Q)uit"])?;
         }
 
         loop {
