@@ -28,12 +28,12 @@ use local_ip_address::local_ip;
 const PLAY_WIDTH: usize = 10;
 const PLAY_HEIGHT: usize = 20;
 
-const DISTANCE: u16 = 6;
+const DISTANCE: usize = 6;
 
 const NEXT_WIDTH: usize = 6;
 const NEXT_HEIGHT: usize = 5;
 
-const STATS_WIDTH: u16 = 18;
+const STATS_WIDTH: usize = 18;
 
 const MAX_LEVEL: usize = 20;
 const LINES_PER_LEVEL: usize = 20;
@@ -46,26 +46,11 @@ struct Cell {
 
 const SPACE: &str = "   ";
 const SQUARE_BRACKETS: &str = "[ ]";
-const BLOCK_WIDTH: usize = 3;
+const CELL_WIDTH: usize = 3;
 
 const EMPTY_CELL: Cell = Cell {
     symbols: SPACE,
     color: Color::Reset,
-};
-
-const BORDER_CELL: Cell = Cell {
-    symbols: "---",
-    color: Color::White,
-};
-
-const LEFT_BORDER_CELL: Cell = Cell {
-    symbols: "  |",
-    color: Color::White,
-};
-
-const RIGHT_BORDER_CELL: Cell = Cell {
-    symbols: "|  ",
-    color: Color::White,
 };
 
 const I_CELL: Cell = Cell {
@@ -113,8 +98,9 @@ const L_CELL: Cell = Cell {
 
 #[derive(Clone)]
 struct Position {
-    row: usize,
-    col: usize,
+    // Empty row/column can go outside of the playing field
+    row: isize,
+    col: isize,
 }
 
 struct Tetromino {
@@ -162,14 +148,13 @@ struct MultiplayerScore {
 
 struct Game {
     play_grid: Vec<Vec<Cell>>,
-    next_grid: Vec<Vec<Cell>>,
     current_tetromino: Tetromino,
     next_tetromino: Tetromino,
-    start_x: u16,
-    start_y: u16,
-    lines: u32,
-    level: u32,
-    score: u32,
+    start_x: usize,
+    start_y: usize,
+    lines: usize,
+    level: usize,
+    score: usize,
     drop_interval: u64,
     conn: Connection,
     paused: bool,
@@ -185,10 +170,9 @@ impl Game {
         receiver: Option<Receiver<MessageType>>,
     ) -> Result<Self> {
         let (term_width, term_height) = terminal::size()?;
-        let grid_width = (PLAY_WIDTH + 2) * BLOCK_WIDTH;
+        let grid_width = PLAY_WIDTH * CELL_WIDTH + 2;
         let grid_height = PLAY_HEIGHT + 2;
-        let required_width =
-            (STATS_WIDTH + 2 + DISTANCE) * 2 + PLAY_WIDTH as u16 * BLOCK_WIDTH as u16 + 2;
+        let required_width = (STATS_WIDTH + 2 + DISTANCE) * 2 + PLAY_WIDTH * CELL_WIDTH + 2;
         if term_width < required_width as u16 || term_height < grid_height as u16 {
             eprintln!(
                 "The terminal is too small: {}x{}.\nRequired dimensions are  : {}x{}.",
@@ -196,18 +180,16 @@ impl Game {
             );
             exit(1);
         }
-        let start_x = (term_width - grid_width as u16) / 2;
-        let start_y = (term_height - grid_height as u16) / 2;
+        let start_x = (term_width as usize - grid_width) / 2;
+        let start_y = (term_height as usize - grid_height) / 2;
 
         let play_grid = create_grid(PLAY_WIDTH, PLAY_HEIGHT);
-        let next_grid = create_grid(NEXT_WIDTH, NEXT_HEIGHT);
 
         let current_tetromino = Tetromino::new(false);
         let next_tetromino = Tetromino::new(true);
 
         Ok(Game {
             play_grid,
-            next_grid,
             current_tetromino,
             next_tetromino,
             start_x,
@@ -250,7 +232,6 @@ impl Game {
     fn reset(&mut self) {
         // Reset play and preview grids
         self.play_grid = create_grid(PLAY_WIDTH, PLAY_HEIGHT);
-        self.next_grid = create_grid(NEXT_WIDTH, NEXT_HEIGHT);
 
         // Reset tetrominos
         self.current_tetromino = Tetromino::new(false);
@@ -276,30 +257,39 @@ impl Game {
 
         for (y, row) in self.play_grid.iter().enumerate() {
             for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16;
-                let screen_y = self.start_y + y as u16;
+                let screen_x = self.start_x + 1 + x * CELL_WIDTH;
+                let screen_y = self.start_y + 1 + y;
                 render_cell(stdout, screen_x, screen_y, cell.clone())?;
             }
         }
 
-        let next_start_x = self.start_x + PLAY_WIDTH as u16 * BLOCK_WIDTH as u16 + 3 + DISTANCE;
+        render_frame(
+            stdout,
+            "Tetris",
+            self.start_x,
+            self.start_y,
+            PLAY_WIDTH * 3,
+            PLAY_HEIGHT + 1,
+        )?;
+
+        let next_start_x = self.start_x + PLAY_WIDTH * CELL_WIDTH + 1 + DISTANCE;
 
         render_frame(
             stdout,
             "Next",
             next_start_x,
             self.start_y,
-            NEXT_WIDTH as u16 * 3,
-            NEXT_HEIGHT as u16 + 1,
+            NEXT_WIDTH * 3,
+            NEXT_HEIGHT + 1,
         )?;
 
-        let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE + 1;
+        let stats_start_x = self.start_x - DISTANCE - STATS_WIDTH - 1;
         print_left_aligned_messages(
             stdout,
             "Stats",
             Some(STATS_WIDTH.into()),
-            stats_start_x,
-            self.start_y + 1,
+            stats_start_x as u16,
+            self.start_y as u16 + 1,
             vec![
                 "",
                 format!("Score: {}", self.score).as_str(),
@@ -314,8 +304,8 @@ impl Game {
                 stdout,
                 "2-Player",
                 Some(STATS_WIDTH.into()),
-                stats_start_x,
-                self.start_y + 9,
+                stats_start_x as u16,
+                self.start_y as u16 + 9,
                 vec![
                     "",
                     format!(
@@ -332,8 +322,8 @@ impl Game {
             stdout,
             "Help",
             None,
-            next_start_x,
-            self.start_y + NEXT_HEIGHT as u16 + 7,
+            next_start_x as u16,
+            self.start_y as u16 + NEXT_HEIGHT as u16 + 7,
             vec![
                 "",
                 "Left: h, ←",
@@ -353,40 +343,47 @@ impl Game {
     fn render_changed_portions(&self, stdout: &mut std::io::Stdout) -> Result<()> {
         for (y, row) in self.play_grid.iter().enumerate() {
             for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + x as u16 * BLOCK_WIDTH as u16;
-                let screen_y = self.start_y + y as u16;
+                let screen_x = self.start_x + 1 + x * CELL_WIDTH;
+                let screen_y = self.start_y + 1 + y;
                 render_cell(stdout, screen_x, screen_y, cell.clone())?;
             }
         }
 
-        let next_start_x = self.start_x + PLAY_WIDTH as u16 * BLOCK_WIDTH as u16 + 3 + DISTANCE;
-        for i in 1..NEXT_HEIGHT - 1 {
+        // Clear the next component
+        let next_start_x = self.start_x + PLAY_WIDTH * CELL_WIDTH + 1 + DISTANCE;
+        for i in 0..NEXT_HEIGHT {
             execute!(
                 stdout,
                 SetForegroundColor(Color::White),
                 SetBackgroundColor(Color::Black),
                 SavePosition,
-                MoveTo(
-                    next_start_x + 1 + BLOCK_WIDTH as u16,
-                    self.start_y + 1 + i as u16
-                ),
-                Print(" ".repeat(4 * BLOCK_WIDTH)),
+                MoveTo(next_start_x as u16 + 1, self.start_y as u16 + 1 + i as u16),
+                Print(" ".repeat(NEXT_WIDTH * CELL_WIDTH)),
                 ResetColor,
                 RestorePosition,
             )?;
         }
 
-        let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE + 1;
+        let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE - 1;
         execute!(
             stdout,
             SetForegroundColor(Color::White),
             SetBackgroundColor(Color::Black),
             SavePosition,
-            MoveTo(stats_start_x + 2 + "Score: ".len() as u16, self.start_y + 2),
+            MoveTo(
+                stats_start_x as u16 + 2 + "Score: ".len() as u16,
+                self.start_y as u16 + 2
+            ),
             Print(self.score),
-            MoveTo(stats_start_x + 2 + "Lines: ".len() as u16, self.start_y + 3),
+            MoveTo(
+                stats_start_x as u16 + 2 + "Lines: ".len() as u16,
+                self.start_y as u16 + 3
+            ),
             Print(self.lines),
-            MoveTo(stats_start_x + 2 + "Level: ".len() as u16, self.start_y + 4),
+            MoveTo(
+                stats_start_x as u16 + 2 + "Level: ".len() as u16,
+                self.start_y as u16 + 4
+            ),
             Print(self.level),
             ResetColor,
             RestorePosition,
@@ -414,18 +411,13 @@ impl Game {
                                 let random_cell_index = rng.gen_range(0..cells.len());
                                 let random_cell = cells[random_cell_index].clone();
 
-                                let mut new_row = vec![LEFT_BORDER_CELL; 1]
-                                    .into_iter()
-                                    .chain(vec![random_cell; PLAY_WIDTH])
-                                    .into_iter()
-                                    .chain(vec![RIGHT_BORDER_CELL; 1].into_iter())
-                                    .collect::<Vec<Cell>>();
-                                let random_column = rng.gen_range(1..=PLAY_WIDTH);
+                                let mut new_row = vec![random_cell; PLAY_WIDTH];
+                                let random_column = rng.gen_range(0..PLAY_WIDTH);
                                 new_row[random_column] = EMPTY_CELL;
 
                                 for _ in 0..rows {
-                                    self.play_grid.remove(1);
-                                    self.play_grid.insert(PLAY_HEIGHT, new_row.clone());
+                                    self.play_grid.remove(0);
+                                    self.play_grid.insert(PLAY_HEIGHT - 1, new_row.clone());
                                 }
 
                                 self.render_changed_portions(stdout)?;
@@ -441,7 +433,7 @@ impl Game {
 
                                 self.multiplayer_score.my_score += 1;
 
-                                let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE + 1;
+                                let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE - 1;
                                 if let Some(_) = &self.stream {
                                     execute!(
                                         stdout,
@@ -449,8 +441,8 @@ impl Game {
                                         SetBackgroundColor(Color::Black),
                                         SavePosition,
                                         MoveTo(
-                                            stats_start_x + 2 + "Score: ".len() as u16,
-                                            self.start_y + 10
+                                            stats_start_x as u16 + 2 + "Score: ".len() as u16,
+                                            self.start_y as u16 + 10
                                         ),
                                         Print(format!(
                                             "{} - {}",
@@ -503,15 +495,14 @@ impl Game {
                     reset_game(self, stdout)?;
                 }
 
-                if self.level <= MAX_LEVEL as u32
-                    && self.lines >= LINES_PER_LEVEL as u32 * (self.level + 1)
-                {
+                if self.level <= MAX_LEVEL && self.lines >= LINES_PER_LEVEL * (self.level + 1) {
                     self.level += 1;
                     self.drop_interval -= self.drop_interval / 10;
                 }
 
                 if drop_timer.elapsed() >= Duration::from_millis(self.drop_interval) {
                     let mut tetromino = self.current_tetromino.clone();
+                    // println!("{}", tetromino.position.row);
                     let can_move_down = self.can_move(
                         &tetromino,
                         tetromino.position.row as i16 + 1,
@@ -570,7 +561,7 @@ impl Game {
                                                 self.lock_and_move_to_next(&tetromino, stdout)?;
                                             }
 
-                                            self.render_tetromino(stdout)?;
+                                            // self.render_tetromino(stdout)?;
 
                                             soft_drop_timer = Instant::now();
                                         }
@@ -678,9 +669,9 @@ impl Game {
                     let grid_x = new_col + t_col as i16;
                     let grid_y = new_row + t_row as i16;
 
-                    if grid_x < 1
-                        || grid_x > PLAY_WIDTH as i16
-                        || grid_y > PLAY_HEIGHT as i16
+                    if grid_x < 0
+                        || grid_x >= PLAY_WIDTH as i16
+                        || grid_y >= PLAY_HEIGHT as i16
                         || self.play_grid[grid_y as usize][grid_x as usize].symbols
                             == SQUARE_BRACKETS
                     {
@@ -697,8 +688,8 @@ impl Game {
         let tetromino = &self.current_tetromino;
         for (row_index, row) in tetromino.states[tetromino.current_state].iter().enumerate() {
             for (col_index, &ref cell) in row.iter().enumerate() {
-                let grid_x = tetromino.position.col + col_index as usize;
-                let grid_y = tetromino.position.row + row_index as usize;
+                let grid_x = tetromino.position.col + col_index as isize;
+                let grid_y = tetromino.position.row + row_index as isize;
 
                 if cell.symbols != SPACE {
                     execute!(
@@ -706,8 +697,8 @@ impl Game {
                         SetBackgroundColor(Color::Black),
                         SavePosition,
                         MoveTo(
-                            self.start_x + grid_x as u16 * BLOCK_WIDTH as u16,
-                            self.start_y + grid_y as u16,
+                            self.start_x as u16 + 1 + grid_x as u16 * CELL_WIDTH as u16,
+                            self.start_y as u16 + 1 + grid_y as u16,
                         ),
                         Print(SPACE),
                         ResetColor,
@@ -735,8 +726,8 @@ impl Game {
         for (ty, row) in tetromino.get_cells().iter().enumerate() {
             for (tx, &ref cell) in row.iter().enumerate() {
                 if cell.symbols == SQUARE_BRACKETS {
-                    let grid_x = tetromino.position.col + tx;
-                    let grid_y = tetromino.position.row + ty;
+                    let grid_x = (tetromino.position.col as usize).wrapping_add(tx);
+                    let grid_y = (tetromino.position.row as usize).wrapping_add(ty);
 
                     self.play_grid[grid_y][grid_x] = cell.clone();
                 }
@@ -750,17 +741,17 @@ impl Game {
 
     fn move_to_next(&mut self) {
         self.current_tetromino = self.next_tetromino.clone();
-        self.current_tetromino.position.row = 1;
+        self.current_tetromino.position.row = 0;
         self.current_tetromino.position.col =
-            (PLAY_WIDTH + 2 - tetromino_width(&self.current_tetromino.states[0])) / 2;
+            (PLAY_WIDTH - tetromino_width(&self.current_tetromino.states[0])) as isize / 2;
         self.next_tetromino = Tetromino::new(true);
     }
 
     fn clear_filled_rows(&mut self, stdout: &mut io::Stdout) -> Result<()> {
         let mut filled_rows: Vec<usize> = Vec::new();
 
-        for row_index in (1..=PLAY_HEIGHT).rev() {
-            if self.play_grid[row_index][1..=PLAY_WIDTH]
+        for row_index in (0..PLAY_HEIGHT).rev() {
+            if self.play_grid[row_index][0..PLAY_WIDTH]
                 .iter()
                 .all(|cell| cell.symbols == SQUARE_BRACKETS)
             {
@@ -768,15 +759,10 @@ impl Game {
             }
         }
 
-        let new_row = vec![LEFT_BORDER_CELL; 1]
-            .into_iter()
-            .chain(vec![EMPTY_CELL; PLAY_WIDTH])
-            .into_iter()
-            .chain(vec![RIGHT_BORDER_CELL; 1].into_iter())
-            .collect::<Vec<Cell>>();
+        let new_row = vec![EMPTY_CELL; PLAY_WIDTH];
         for &row_index in filled_rows.iter().rev() {
             self.play_grid.remove(row_index);
-            self.play_grid.insert(1, new_row.clone());
+            self.play_grid.insert(0, new_row.clone());
 
             self.lines += 1;
         }
@@ -816,22 +802,17 @@ impl Game {
             .enumerate()
         {
             for (col_index, &ref cell) in row.iter().enumerate() {
-                let grid_x = current_tetromino.position.col + col_index;
-                let grid_y = current_tetromino.position.row + row_index;
+                let grid_x = current_tetromino.position.col + col_index as isize;
+                let grid_y = current_tetromino.position.row + row_index as isize;
 
                 if cell.symbols != SPACE {
-                    if grid_x >= 1
-                        && grid_x <= PLAY_WIDTH
-                        && grid_y >= 1
-                        && grid_y <= PLAY_HEIGHT
-                        && self.play_grid[grid_y][grid_x].symbols == SPACE
-                    {
+                    if grid_x < PLAY_WIDTH as isize && grid_y < PLAY_HEIGHT as isize {
                         execute!(
                             stdout,
                             SavePosition,
                             MoveTo(
-                                self.start_x + grid_x as u16 * BLOCK_WIDTH as u16,
-                                self.start_y + grid_y as u16
+                                self.start_x as u16 + 1 + grid_x as u16 * CELL_WIDTH as u16,
+                                self.start_y as u16 + 1 + grid_y as u16
                             ),
                             SetForegroundColor(cell.color),
                             SetBackgroundColor(Color::Black),
@@ -844,34 +825,30 @@ impl Game {
             }
         }
 
+        let next_start_x = self.start_x + PLAY_WIDTH * CELL_WIDTH + 1 + DISTANCE;
         let next_tetromino = &self.next_tetromino;
         for (row_index, row) in next_tetromino.states[next_tetromino.current_state]
             .iter()
             .enumerate()
         {
             for (col_index, &ref cell) in row.iter().enumerate() {
-                let grid_x = next_tetromino.position.col + col_index;
-                let grid_y = next_tetromino.position.row + row_index;
+                let grid_x = next_tetromino.position.col as usize + col_index;
+                let grid_y = next_tetromino.position.row as usize + row_index;
 
                 if cell.symbols != SPACE {
-                    if grid_x >= 1
-                        && grid_x <= NEXT_WIDTH
-                        && grid_y >= 1
-                        && grid_y <= NEXT_HEIGHT
-                        && self.next_grid[grid_y][grid_x].symbols == SPACE
-                    {
+                    if grid_x < NEXT_WIDTH && grid_y < NEXT_HEIGHT {
                         execute!(
                             stdout,
                             SavePosition,
                             MoveTo(
-                                self.start_x
-                                    + (PLAY_WIDTH + grid_x) as u16 * BLOCK_WIDTH as u16
-                                    + 4
+                                next_start_x as u16
+                                    + 1
+                                    + grid_x as u16 * CELL_WIDTH as u16
                                     + tetromino_width(
                                         &next_tetromino.states[next_tetromino.current_state]
                                     ) as u16
                                         % 2,
-                                self.start_y + grid_y as u16
+                                self.start_y as u16 + grid_y as u16
                             ),
                             SetForegroundColor(cell.color),
                             SetBackgroundColor(Color::Black),
@@ -901,7 +878,7 @@ impl Game {
             send_message(stream, MessageType::Notification("YOU WIN!".to_string()));
             self.multiplayer_score.competitor_score += 1;
 
-            let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE + 1;
+            let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE - 1;
             if let Some(_) = &self.stream {
                 execute!(
                     stdout,
@@ -909,8 +886,8 @@ impl Game {
                     SetBackgroundColor(Color::Black),
                     SavePosition,
                     MoveTo(
-                        stats_start_x + 2 + "Score: ".len() as u16,
-                        self.start_y + 10
+                        stats_start_x as u16 + 2 + "Score: ".len() as u16,
+                        self.start_y as u16 + 10
                     ),
                     Print(format!(
                         "{} - {}",
@@ -973,7 +950,7 @@ impl Game {
         if players_str.len() > 0 {
             print_centered_messages(
                 stdout,
-                Some((PLAY_WIDTH + 2) * BLOCK_WIDTH).into(),
+                Some((PLAY_WIDTH + 2) * CELL_WIDTH).into(),
                 vec!["GAME OVER"]
                     .into_iter()
                     .chain(vec![""; players_str.len() + 3])
@@ -1135,33 +1112,25 @@ fn quit(stdout: &mut io::Stdout) -> Result<()> {
 }
 
 fn create_grid(width: usize, height: usize) -> Vec<Vec<Cell>> {
-    let mut grid = vec![vec![EMPTY_CELL; width]; height];
-    grid.insert(0, vec![BORDER_CELL; width]);
-    grid.push(vec![BORDER_CELL; width]);
-    for row in grid.iter_mut() {
-        row.insert(0, LEFT_BORDER_CELL);
-        row.push(RIGHT_BORDER_CELL);
-    }
-
-    grid
+    vec![vec![EMPTY_CELL; width]; height]
 }
 
 fn render_frame(
     stdout: &mut io::Stdout,
     title: &str,
-    start_x: u16,
-    start_y: u16,
-    width: u16,
-    height: u16,
+    start_x: usize,
+    start_y: usize,
+    width: usize,
+    height: usize,
 ) -> Result<()> {
     // Print the top border
-    let left = (width - title.len() as u16 - 2) / 2;
+    let left = (width - title.len() - 2) / 2;
     execute!(
         stdout,
         SetForegroundColor(Color::White),
         SetBackgroundColor(Color::Black),
         SavePosition,
-        MoveTo(start_x, start_y),
+        MoveTo(start_x as u16, start_y as u16),
         Print(format!(
             "|{} {} {}|",
             "-".repeat(left as usize),
@@ -1179,8 +1148,13 @@ fn render_frame(
             SetForegroundColor(Color::White),
             SetBackgroundColor(Color::Black),
             SavePosition,
-            MoveTo(start_x, start_y + index as u16),
-            Print(format!("|{}|", " ".repeat(width as usize))),
+            MoveTo(start_x as u16, start_y as u16 + index as u16),
+            Print("|"),
+            MoveTo(
+                start_x as u16 + width as u16 + 1,
+                start_y as u16 + index as u16
+            ),
+            Print("|"),
             ResetColor,
             RestorePosition,
         )?;
@@ -1192,8 +1166,8 @@ fn render_frame(
         SetForegroundColor(Color::White),
         SetBackgroundColor(Color::Black),
         SavePosition,
-        MoveTo(start_x, start_y + height),
-        Print(format!("{}{}{}", "|", ("-").repeat(width as usize), "|")),
+        MoveTo(start_x as u16, start_y as u16 + height as u16),
+        Print(format!("|{}|", ("-").repeat(width as usize))),
         ResetColor,
         RestorePosition,
     )?;
@@ -1203,11 +1177,11 @@ fn render_frame(
     Ok(())
 }
 
-fn render_cell(stdout: &mut std::io::Stdout, x: u16, y: u16, cell: Cell) -> Result<()> {
+fn render_cell(stdout: &mut std::io::Stdout, x: usize, y: usize, cell: Cell) -> Result<()> {
     execute!(
         stdout,
         SavePosition,
-        MoveTo(x, y),
+        MoveTo(x as u16, y as u16),
         SetForegroundColor(cell.color),
         SetBackgroundColor(Color::Black),
         Print(cell.symbols),
@@ -1225,6 +1199,18 @@ impl Tetromino {
                 vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
                 vec![I_CELL, I_CELL, I_CELL, I_CELL],
                 vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
+            ],
+            vec![
+                vec![EMPTY_CELL, EMPTY_CELL, I_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, EMPTY_CELL, I_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, EMPTY_CELL, I_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, EMPTY_CELL, I_CELL, EMPTY_CELL],
+            ],
+            vec![
+                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
+                vec![I_CELL, I_CELL, I_CELL, I_CELL],
                 vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
             ],
             vec![
@@ -1272,6 +1258,16 @@ impl Tetromino {
                 vec![EMPTY_CELL, S_CELL, S_CELL],
                 vec![EMPTY_CELL, EMPTY_CELL, S_CELL],
             ],
+            vec![
+                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, S_CELL, S_CELL],
+                vec![S_CELL, S_CELL, EMPTY_CELL],
+            ],
+            vec![
+                vec![S_CELL, EMPTY_CELL, EMPTY_CELL],
+                vec![S_CELL, S_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, S_CELL, EMPTY_CELL],
+            ],
         ];
 
         let z_tetromino_states: Vec<Vec<Vec<Cell>>> = vec![
@@ -1279,6 +1275,16 @@ impl Tetromino {
                 vec![Z_CELL, Z_CELL, EMPTY_CELL],
                 vec![EMPTY_CELL, Z_CELL, Z_CELL],
                 vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
+            ],
+            vec![
+                vec![EMPTY_CELL, EMPTY_CELL, Z_CELL],
+                vec![EMPTY_CELL, Z_CELL, Z_CELL],
+                vec![EMPTY_CELL, Z_CELL, EMPTY_CELL],
+            ],
+            vec![
+                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
+                vec![Z_CELL, Z_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, Z_CELL, Z_CELL],
             ],
             vec![
                 vec![EMPTY_CELL, Z_CELL, EMPTY_CELL],
@@ -1289,47 +1295,47 @@ impl Tetromino {
 
         let j_tetromino_states: Vec<Vec<Vec<Cell>>> = vec![
             vec![
-                vec![EMPTY_CELL, J_CELL, EMPTY_CELL],
-                vec![EMPTY_CELL, J_CELL, EMPTY_CELL],
-                vec![J_CELL, J_CELL, EMPTY_CELL],
-            ],
-            vec![
                 vec![J_CELL, EMPTY_CELL, EMPTY_CELL],
                 vec![J_CELL, J_CELL, J_CELL],
                 vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
             ],
             vec![
-                vec![J_CELL, J_CELL, EMPTY_CELL],
-                vec![J_CELL, EMPTY_CELL, EMPTY_CELL],
-                vec![J_CELL, EMPTY_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, J_CELL, J_CELL],
+                vec![EMPTY_CELL, J_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, J_CELL, EMPTY_CELL],
             ],
             vec![
+                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
                 vec![J_CELL, J_CELL, J_CELL],
                 vec![EMPTY_CELL, EMPTY_CELL, J_CELL],
-                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
+            ],
+            vec![
+                vec![EMPTY_CELL, J_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, J_CELL, EMPTY_CELL],
+                vec![J_CELL, J_CELL, EMPTY_CELL],
             ],
         ];
 
         let l_tetromino_states: Vec<Vec<Vec<Cell>>> = vec![
             vec![
-                vec![L_CELL, EMPTY_CELL, EMPTY_CELL],
-                vec![L_CELL, EMPTY_CELL, EMPTY_CELL],
-                vec![L_CELL, L_CELL, EMPTY_CELL],
-            ],
-            vec![
-                vec![L_CELL, L_CELL, L_CELL],
-                vec![L_CELL, EMPTY_CELL, EMPTY_CELL],
-                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
-            ],
-            vec![
-                vec![L_CELL, L_CELL, EMPTY_CELL],
-                vec![EMPTY_CELL, L_CELL, EMPTY_CELL],
-                vec![EMPTY_CELL, L_CELL, EMPTY_CELL],
-            ],
-            vec![
-                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
                 vec![EMPTY_CELL, EMPTY_CELL, L_CELL],
                 vec![L_CELL, L_CELL, L_CELL],
+                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
+            ],
+            vec![
+                vec![EMPTY_CELL, L_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, L_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, L_CELL, L_CELL],
+            ],
+            vec![
+                vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
+                vec![L_CELL, L_CELL, L_CELL],
+                vec![L_CELL, EMPTY_CELL, EMPTY_CELL],
+            ],
+            vec![
+                vec![L_CELL, L_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, L_CELL, EMPTY_CELL],
+                vec![EMPTY_CELL, L_CELL, EMPTY_CELL],
             ],
         ];
 
@@ -1349,11 +1355,11 @@ impl Tetromino {
         let states = tetromino_states[random_tetromino_index].clone();
         let tetromino_with = tetromino_width(&states[0]);
 
-        let mut row = 1;
-        let mut col = (PLAY_WIDTH + 2 - tetromino_with) / 2;
+        let mut row = 0;
+        let mut col = (PLAY_WIDTH - tetromino_with) as isize / 2;
         if is_next {
             row = 2;
-            col = (NEXT_WIDTH + 4 - tetromino_with) / 2;
+            col = (NEXT_WIDTH - tetromino_with) as isize / 2;
         }
 
         Tetromino {
@@ -1536,7 +1542,7 @@ fn open() -> RusqliteResult<Connection, Box<dyn Error>> {
     Ok(conn)
 }
 
-const MARGIN: usize = BLOCK_WIDTH;
+const MARGIN: usize = CELL_WIDTH;
 
 fn print_centered_messages(
     stdout: &mut io::Stdout,
