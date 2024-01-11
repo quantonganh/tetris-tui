@@ -11,7 +11,7 @@ use crossterm::{
     event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind},
     execute,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
-    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
 
@@ -125,6 +125,7 @@ struct Player {
 
 const ENTER_YOUR_NAME_MESSAGE: &str = "Enter your name: ";
 const MAX_NAME_LENGTH: usize = 12;
+const DEFAULT_INTERVAL: u64 = 500;
 
 #[derive(Debug)]
 struct GameError {
@@ -153,6 +154,7 @@ struct Game {
     start_x: usize,
     start_y: usize,
     lines: usize,
+    start_at_level: usize,
     level: usize,
     score: usize,
     drop_interval: u64,
@@ -161,6 +163,7 @@ struct Game {
     stream: Option<TcpStream>,
     receiver: Option<Receiver<MessageType>>,
     multiplayer_score: MultiplayerScore,
+    start_with_number_of_filled_lines: usize,
 }
 
 impl Game {
@@ -168,6 +171,8 @@ impl Game {
         conn: Connection,
         stream: Option<TcpStream>,
         receiver: Option<Receiver<MessageType>>,
+        start_with_number_of_filled_lines: usize,
+        start_at_level: usize,
     ) -> Result<Self> {
         let (term_width, term_height) = terminal::size()?;
         let grid_width = PLAY_WIDTH * CELL_WIDTH + 2;
@@ -183,10 +188,15 @@ impl Game {
         let start_x = (term_width as usize - grid_width) / 2;
         let start_y = (term_height as usize - grid_height) / 2;
 
-        let play_grid = create_grid(PLAY_WIDTH, PLAY_HEIGHT);
+        let play_grid = create_grid(PLAY_WIDTH, PLAY_HEIGHT, start_with_number_of_filled_lines);
 
         let current_tetromino = Tetromino::new(false);
         let next_tetromino = Tetromino::new(true);
+
+        let mut drop_interval: u64 = DEFAULT_INTERVAL;
+        for _i in 1..=start_at_level {
+            drop_interval -= drop_interval / 10;
+        }
 
         Ok(Game {
             play_grid,
@@ -195,9 +205,10 @@ impl Game {
             start_x,
             start_y,
             lines: 0,
-            level: 0,
+            start_at_level,
+            level: start_at_level,
             score: 0,
-            drop_interval: 500,
+            drop_interval,
             conn,
             paused: false,
             stream,
@@ -206,6 +217,7 @@ impl Game {
                 my_score: 0,
                 competitor_score: 0,
             },
+            start_with_number_of_filled_lines,
         })
     }
 
@@ -228,7 +240,11 @@ impl Game {
 
     fn reset(&mut self) {
         // Reset play and preview grids
-        self.play_grid = create_grid(PLAY_WIDTH, PLAY_HEIGHT);
+        self.play_grid = create_grid(
+            PLAY_WIDTH,
+            PLAY_HEIGHT,
+            self.start_with_number_of_filled_lines,
+        );
 
         // Reset tetrominos
         self.current_tetromino = Tetromino::new(false);
@@ -236,9 +252,14 @@ impl Game {
 
         // Reset game statistics
         self.lines = 0;
-        self.level = 0;
+        self.level = self.start_at_level;
         self.score = 0;
-        self.drop_interval = 500;
+
+        let mut drop_interval: u64 = DEFAULT_INTERVAL;
+        for _i in 1..=self.start_at_level {
+            drop_interval -= drop_interval / 10;
+        }
+        self.drop_interval = drop_interval;
 
         // Clear any existing messages in the receiver
         if let Some(ref mut receiver) = self.receiver {
@@ -250,6 +271,8 @@ impl Game {
     }
 
     fn render(&self, stdout: &mut std::io::Stdout) -> Result<()> {
+        stdout.execute(Clear(ClearType::All))?;
+
         for (y, row) in self.play_grid.iter().enumerate() {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + 1 + x * CELL_WIDTH;
@@ -999,6 +1022,7 @@ impl Game {
             vec![
                 "NEW HIGH SCORE!",
                 &self.score.to_string(),
+                "",
                 &format!("{}{}", ENTER_YOUR_NAME_MESSAGE, " ".repeat(MAX_NAME_LENGTH)),
             ],
         )?;
@@ -1105,8 +1129,27 @@ fn quit(stdout: &mut io::Stdout) -> Result<()> {
     std::process::exit(0);
 }
 
-fn create_grid(width: usize, height: usize) -> Vec<Vec<Cell>> {
-    vec![vec![EMPTY_CELL; width]; height]
+fn create_grid(
+    width: usize,
+    height: usize,
+    start_with_number_of_filled_lines: usize,
+) -> Vec<Vec<Cell>> {
+    let mut grid = vec![vec![EMPTY_CELL; width]; height - start_with_number_of_filled_lines];
+
+    let cells = vec![I_CELL, O_CELL, T_CELL, S_CELL, Z_CELL, T_CELL, L_CELL];
+    for _ in 0..start_with_number_of_filled_lines {
+        let mut rng = rand::thread_rng();
+        let random_cell_index = rng.gen_range(0..cells.len());
+        let random_cell = cells[random_cell_index].clone();
+
+        let mut new_row = vec![random_cell; PLAY_WIDTH];
+        let random_column = rng.gen_range(0..PLAY_WIDTH);
+        new_row[random_column] = EMPTY_CELL;
+
+        grid.push(new_row.clone());
+    }
+
+    grid
 }
 
 fn render_frame(
@@ -1447,6 +1490,14 @@ struct Args {
 
     #[arg(short, long)]
     server_address: Option<String>,
+
+    /// The number of lines already filled
+    #[arg(short, long, default_value_t = 0, verbatim_doc_comment)]
+    number_of_lines_already_filled: usize,
+
+    /// Start at level
+    #[arg(short, long, default_value_t = 0, verbatim_doc_comment)]
+    level: usize,
 }
 
 enum MessageType {
@@ -1461,6 +1512,18 @@ fn main() -> Result<()> {
     let conn = open()?;
 
     let args = Args::parse();
+    let number_of_lines_already_filled = args.number_of_lines_already_filled;
+    if number_of_lines_already_filled > 10 {
+        eprintln!("The number of lines already filled must be less than or equal 10.");
+        exit(1);
+    }
+
+    let start_at_level = args.level;
+    if start_at_level > MAX_LEVEL {
+        eprintln!("Level must be between 0 and {}.", MAX_LEVEL);
+        exit(1);
+    }
+
     if args.multiplayer {
         if args.server_address == None {
             let listener = TcpListener::bind("0.0.0.0:8080")?;
@@ -1475,7 +1538,13 @@ fn main() -> Result<()> {
 
             let mut stream_clone = stream.try_clone()?;
             let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
-            let mut game = Game::new(conn, Some(stream), Some(receiver))?;
+            let mut game = Game::new(
+                conn,
+                Some(stream),
+                Some(receiver),
+                args.number_of_lines_already_filled,
+                args.level,
+            )?;
 
             thread::spawn(move || {
                 receive_message(&mut stream_clone, sender);
@@ -1488,7 +1557,13 @@ fn main() -> Result<()> {
 
                 let mut stream_clone = stream.try_clone()?;
                 let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
-                let mut game = Game::new(conn, Some(stream), Some(receiver))?;
+                let mut game = Game::new(
+                    conn,
+                    Some(stream),
+                    Some(receiver),
+                    number_of_lines_already_filled,
+                    start_at_level,
+                )?;
 
                 thread::spawn(move || {
                     receive_message(&mut stream_clone, sender);
@@ -1498,7 +1573,13 @@ fn main() -> Result<()> {
             }
         }
     } else {
-        let mut game = Game::new(conn, None, None)?;
+        let mut game = Game::new(
+            conn,
+            None,
+            None,
+            number_of_lines_already_filled,
+            start_at_level,
+        )?;
         game.start()?;
     }
 
