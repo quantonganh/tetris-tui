@@ -11,7 +11,7 @@ use crossterm::{
     event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind},
     execute,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
-    terminal::{self, Clear, ClearType},
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
 
@@ -214,7 +214,7 @@ impl Game {
 
         let mut stdout = io::stdout();
 
-        execute!(stdout.lock(), cursor::Hide)?;
+        execute!(stdout.lock(), cursor::Hide, EnterAlternateScreen)?;
 
         self.render(&mut stdout)?;
 
@@ -222,9 +222,6 @@ impl Game {
             Ok(_) => {}
             Err(err) => eprintln!("Error: {}", err),
         }
-
-        execute!(io::stdout(), cursor::Show)?;
-        terminal::disable_raw_mode()?;
 
         Ok(())
     }
@@ -253,8 +250,6 @@ impl Game {
     }
 
     fn render(&self, stdout: &mut std::io::Stdout) -> Result<()> {
-        stdout.execute(Clear(ClearType::All))?;
-
         for (y, row) in self.play_grid.iter().enumerate() {
             for (x, &ref cell) in row.iter().enumerate() {
                 let screen_x = self.start_x + 1 + x * CELL_WIDTH;
@@ -1105,8 +1100,7 @@ fn reset_game(game: &mut Game, stdout: &mut io::Stdout) -> Result<()> {
 }
 
 fn quit(stdout: &mut io::Stdout) -> Result<()> {
-    execute!(stdout, Clear(ClearType::All))?;
-    execute!(stdout, cursor::Show)?;
+    execute!(stdout, LeaveAlternateScreen, cursor::Show)?;
     terminal::disable_raw_mode()?;
     std::process::exit(0);
 }
