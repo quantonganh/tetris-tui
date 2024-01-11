@@ -54,11 +54,18 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Set version
+      if: matrix.build == 'x86_64-linux'
+      run: |
+        cargo install cargo-edit
+        echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+        cargo-set-version set-version ${{ env.VERSION }}
+
     - name: Publish
       if: matrix.build == 'x86_64-linux'
       run: |
         cargo login ${{ secrets.CRATES_IO_API_TOKEN }}
-        cargo publish --target x86_64-unknown-linux-gnu
+        cargo publish --target x86_64-unknown-linux-gnu --allow-dirty
 
     - name: Install ${{ matrix.rust }} toolchain
       uses: dtolnay/rust-toolchain@master
@@ -84,7 +91,7 @@ jobs:
       with:
         arguments: assemble
       env:
-        JRELEASER_PROJECT_VERSION: ${{ github.ref_name }}
+        JRELEASER_PROJECT_VERSION: ${{ env.VERSION }}
         JRELEASER_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         JRELEASER_PLATFORM_OVERRIDE: ${{ matrix.jreleaser_platform }}
 
@@ -113,7 +120,7 @@ jobs:
         with:
           arguments: full-release -PartifactsDir=artifacts -PskipArchiveResolver
         env:
-          JRELEASER_PROJECT_VERSION: ${{ github.ref_name }}
+          JRELEASER_PROJECT_VERSION: ${{ env.VERSION }}
           JRELEASER_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           JRELEASER_CHOCOLATEY_API_KEY: ${{ secrets.CHOCO_API_KEY }}
 
