@@ -54,11 +54,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Set version
+      run: |
+        sed -i "s/^version = \".*\"$/version = \"${GITHUB_REF_NAME#v}\"/" Cargo.toml
+
     - name: Publish
       if: matrix.build == 'x86_64-linux'
       run: |
         cargo login ${{ secrets.CRATES_IO_API_TOKEN }}
-        cargo publish --target x86_64-unknown-linux-gnu
+        cargo publish --target x86_64-unknown-linux-gnu --allow-dirty
 
     - name: Install ${{ matrix.rust }} toolchain
       uses: dtolnay/rust-toolchain@master
@@ -84,7 +88,7 @@ jobs:
       with:
         arguments: assemble
       env:
-        JRELEASER_PROJECT_VERSION: ${{ github.ref_name }}
+        JRELEASER_PROJECT_VERSION: ${GITHUB_REF_NAME#v}
         JRELEASER_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         JRELEASER_PLATFORM_OVERRIDE: ${{ matrix.jreleaser_platform }}
 
