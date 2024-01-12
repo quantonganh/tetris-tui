@@ -274,6 +274,7 @@ impl Game {
         stdout.execute(Clear(ClearType::All))?;
 
         self.render_play_grid(stdout)?;
+        self.render_current_tetromino(stdout)?;
 
         render_frame(
             stdout,
@@ -294,6 +295,7 @@ impl Game {
             NEXT_WIDTH * 3,
             NEXT_HEIGHT + 1,
         )?;
+        self.render_next_tetromino(stdout)?;
 
         let stats_start_x = self.start_x - DISTANCE - STATS_WIDTH - 1;
         print_left_aligned_messages(
@@ -354,21 +356,6 @@ impl Game {
 
     fn render_changed_portions(&self, stdout: &mut std::io::Stdout) -> Result<()> {
         self.render_play_grid(stdout)?;
-
-        // Clear the next component
-        let next_start_x = self.start_x + PLAY_WIDTH * CELL_WIDTH + 1 + DISTANCE;
-        for i in 0..NEXT_HEIGHT {
-            execute!(
-                stdout,
-                SetForegroundColor(Color::White),
-                SetBackgroundColor(Color::Black),
-                SavePosition,
-                MoveTo(next_start_x as u16 + 1, self.start_y as u16 + 1 + i as u16),
-                Print(" ".repeat(NEXT_WIDTH * CELL_WIDTH)),
-                ResetColor,
-                RestorePosition,
-            )?;
-        }
 
         let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE - 1;
         execute!(
@@ -533,7 +520,7 @@ impl Game {
                         self.lock_and_move_to_next(&tetromino, stdout)?;
                     }
 
-                    self.render_tetromino(stdout)?;
+                    self.render_current_tetromino(stdout)?;
 
                     drop_timer = Instant::now();
                 }
@@ -597,7 +584,7 @@ impl Game {
                         }
                         _ => {}
                     }
-                    self.render_tetromino(stdout)?;
+                    self.render_current_tetromino(stdout)?;
                 }
             }
         }
@@ -728,7 +715,7 @@ impl Game {
         stdout: &mut io::Stdout,
     ) -> Result<()> {
         self.lock_tetromino(tetromino, stdout)?;
-        self.move_to_next();
+        self.move_to_next(stdout)?;
 
         if self.is_game_over() {
             self.handle_game_over(stdout)?;
@@ -754,12 +741,17 @@ impl Game {
         Ok(())
     }
 
-    fn move_to_next(&mut self) {
+    fn move_to_next(&mut self, stdout: &mut io::Stdout) -> Result<()> {
         self.current_tetromino = self.next_tetromino.clone();
         self.current_tetromino.position.row = 0;
         self.current_tetromino.position.col =
             (PLAY_WIDTH - tetromino_width(&self.current_tetromino.states[0])) as isize / 2;
+        self.render_current_tetromino(stdout)?;
+
         self.next_tetromino = Tetromino::new(true);
+        self.render_next_tetromino(stdout)?;
+
+        Ok(())
     }
 
     fn clear_filled_rows(&mut self, stdout: &mut io::Stdout) -> Result<()> {
@@ -810,7 +802,7 @@ impl Game {
         Ok(())
     }
 
-    fn render_tetromino(&self, stdout: &mut std::io::Stdout) -> Result<()> {
+    fn render_current_tetromino(&self, stdout: &mut std::io::Stdout) -> Result<()> {
         let current_tetromino = &self.current_tetromino;
         for (row_index, row) in current_tetromino.states[current_tetromino.current_state]
             .iter()
@@ -838,6 +830,24 @@ impl Game {
                     }
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    fn render_next_tetromino(&self, stdout: &mut std::io::Stdout) -> Result<()> {
+        let next_start_x = self.start_x + PLAY_WIDTH * CELL_WIDTH + 1 + DISTANCE;
+        for i in 0..NEXT_HEIGHT {
+            execute!(
+                stdout,
+                SetForegroundColor(Color::White),
+                SetBackgroundColor(Color::Black),
+                SavePosition,
+                MoveTo(next_start_x as u16 + 1, self.start_y as u16 + 1 + i as u16),
+                Print(" ".repeat(NEXT_WIDTH * CELL_WIDTH)),
+                ResetColor,
+                RestorePosition,
+            )?;
         }
 
         let next_start_x = self.start_x + PLAY_WIDTH * CELL_WIDTH + 1 + DISTANCE;
