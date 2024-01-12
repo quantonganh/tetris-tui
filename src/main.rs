@@ -406,6 +406,93 @@ impl Game {
             if self.paused {
                 self.handle_pause_event(stdout)?;
             } else {
+                if self.level <= MAX_LEVEL && self.lines >= LINES_PER_LEVEL * (self.level + 1) {
+                    self.level += 1;
+                    self.drop_interval -= self.drop_interval / 10;
+                }
+
+                if drop_timer.elapsed() >= Duration::from_millis(self.drop_interval) {
+                    let mut tetromino = self.current_tetromino.clone();
+                    let can_move_down = self.can_move(
+                        &tetromino,
+                        tetromino.position.row as i16 + 1,
+                        tetromino.position.col as i16,
+                    );
+
+                    if can_move_down {
+                        tetromino.move_down(self, stdout)?;
+                        self.current_tetromino = tetromino;
+                    } else {
+                        self.lock_and_move_to_next(&tetromino, stdout)?;
+                    }
+
+                    self.render_current_tetromino(stdout)?;
+
+                    drop_timer = Instant::now();
+                }
+
+                if poll(Duration::from_millis(10))? {
+                    let event = read()?;
+                    match event {
+                        Event::Key(KeyEvent {
+                            code,
+                            state: _,
+                            kind,
+                            modifiers: _,
+                        }) => {
+                            if kind == KeyEventKind::Press {
+                                let mut tetromino = self.current_tetromino.clone();
+                                match code {
+                                    KeyCode::Char('h') | KeyCode::Left => {
+                                        tetromino.move_left(self, stdout)?;
+                                        self.current_tetromino = tetromino;
+                                    }
+                                    KeyCode::Char('l') | KeyCode::Right => {
+                                        tetromino.move_right(self, stdout)?;
+                                        self.current_tetromino = tetromino;
+                                    }
+                                    KeyCode::Char(' ') => {
+                                        tetromino.rotate(self, stdout)?;
+                                        self.current_tetromino = tetromino;
+                                    }
+                                    KeyCode::Char('s') | KeyCode::Up => {
+                                        if soft_drop_timer.elapsed()
+                                            >= (Duration::from_millis(self.drop_interval / 8))
+                                        {
+                                            let mut tetromino = self.current_tetromino.clone();
+                                            if self.can_move(
+                                                &tetromino,
+                                                tetromino.position.row as i16 + 1,
+                                                tetromino.position.col as i16,
+                                            ) {
+                                                tetromino.move_down(self, stdout)?;
+                                                self.current_tetromino = tetromino;
+                                            } else {
+                                                self.lock_and_move_to_next(&tetromino, stdout)?;
+                                            }
+
+                                            soft_drop_timer = Instant::now();
+                                        }
+                                    }
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        tetromino.hard_drop(self, stdout)?;
+                                        self.lock_and_move_to_next(&tetromino, stdout)?;
+                                    }
+                                    KeyCode::Char('p') => {
+                                        self.paused = !self.paused;
+                                    }
+                                    KeyCode::Char('q') => {
+                                        self.handle_quit_event(stdout)?;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.render_current_tetromino(stdout)?;
+                }
+
                 if let Some(receiver) = &self.receiver {
                     for message in receiver.try_iter() {
                         match message {
@@ -498,93 +585,6 @@ impl Game {
 
                 if reset_needed {
                     reset_game(self, stdout)?;
-                }
-
-                if self.level <= MAX_LEVEL && self.lines >= LINES_PER_LEVEL * (self.level + 1) {
-                    self.level += 1;
-                    self.drop_interval -= self.drop_interval / 10;
-                }
-
-                if drop_timer.elapsed() >= Duration::from_millis(self.drop_interval) {
-                    let mut tetromino = self.current_tetromino.clone();
-                    let can_move_down = self.can_move(
-                        &tetromino,
-                        tetromino.position.row as i16 + 1,
-                        tetromino.position.col as i16,
-                    );
-
-                    if can_move_down {
-                        tetromino.move_down(self, stdout)?;
-                        self.current_tetromino = tetromino;
-                    } else {
-                        self.lock_and_move_to_next(&tetromino, stdout)?;
-                    }
-
-                    self.render_current_tetromino(stdout)?;
-
-                    drop_timer = Instant::now();
-                }
-
-                if poll(Duration::from_millis(10))? {
-                    let event = read()?;
-                    match event {
-                        Event::Key(KeyEvent {
-                            code,
-                            state: _,
-                            kind,
-                            modifiers: _,
-                        }) => {
-                            if kind == KeyEventKind::Press {
-                                let mut tetromino = self.current_tetromino.clone();
-                                match code {
-                                    KeyCode::Char('h') | KeyCode::Left => {
-                                        tetromino.move_left(self, stdout)?;
-                                        self.current_tetromino = tetromino;
-                                    }
-                                    KeyCode::Char('l') | KeyCode::Right => {
-                                        tetromino.move_right(self, stdout)?;
-                                        self.current_tetromino = tetromino;
-                                    }
-                                    KeyCode::Char(' ') => {
-                                        tetromino.rotate(self, stdout)?;
-                                        self.current_tetromino = tetromino;
-                                    }
-                                    KeyCode::Char('s') | KeyCode::Up => {
-                                        if soft_drop_timer.elapsed()
-                                            >= (Duration::from_millis(self.drop_interval / 8))
-                                        {
-                                            let mut tetromino = self.current_tetromino.clone();
-                                            if self.can_move(
-                                                &tetromino,
-                                                tetromino.position.row as i16 + 1,
-                                                tetromino.position.col as i16,
-                                            ) {
-                                                tetromino.move_down(self, stdout)?;
-                                                self.current_tetromino = tetromino;
-                                            } else {
-                                                self.lock_and_move_to_next(&tetromino, stdout)?;
-                                            }
-
-                                            soft_drop_timer = Instant::now();
-                                        }
-                                    }
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        tetromino.hard_drop(self, stdout)?;
-                                        self.lock_and_move_to_next(&tetromino, stdout)?;
-                                    }
-                                    KeyCode::Char('p') => {
-                                        self.paused = !self.paused;
-                                    }
-                                    KeyCode::Char('q') => {
-                                        self.handle_quit_event(stdout)?;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    self.render_current_tetromino(stdout)?;
                 }
             }
         }
