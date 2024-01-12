@@ -520,7 +520,6 @@ impl Game {
 
                 if drop_timer.elapsed() >= Duration::from_millis(self.drop_interval) {
                     let mut tetromino = self.current_tetromino.clone();
-                    // println!("{}", tetromino.position.row);
                     let can_move_down = self.can_move(
                         &tetromino,
                         tetromino.position.row as i16 + 1,
@@ -565,7 +564,7 @@ impl Game {
                                     }
                                     KeyCode::Char('s') | KeyCode::Up => {
                                         if soft_drop_timer.elapsed()
-                                            >= (Duration::from_millis(self.drop_interval / 4))
+                                            >= (Duration::from_millis(self.drop_interval / 8))
                                         {
                                             let mut tetromino = self.current_tetromino.clone();
                                             if self.can_move(
@@ -578,8 +577,6 @@ impl Game {
                                             } else {
                                                 self.lock_and_move_to_next(&tetromino, stdout)?;
                                             }
-
-                                            // self.render_tetromino(stdout)?;
 
                                             soft_drop_timer = Instant::now();
                                         }
@@ -601,10 +598,6 @@ impl Game {
                         _ => {}
                     }
                     self.render_tetromino(stdout)?;
-                }
-
-                if self.is_game_over() {
-                    self.handle_game_over(stdout)?;
                 }
             }
         }
@@ -736,6 +729,10 @@ impl Game {
     ) -> Result<()> {
         self.lock_tetromino(tetromino, stdout)?;
         self.move_to_next();
+
+        if self.is_game_over() {
+            self.handle_game_over(stdout)?;
+        }
 
         Ok(())
     }
@@ -883,11 +880,32 @@ impl Game {
     }
 
     fn is_game_over(&mut self) -> bool {
-        for row in &self.play_grid[1..2] {
-            if !self.paused && row.iter().any(|cell| cell.symbols == SQUARE_BRACKETS) {
-                return true;
-            }
+        let tetromino = self.current_tetromino.clone();
+
+        let next_state = (tetromino.current_state + 1) % (tetromino.states.len());
+        let mut temp_tetromino = tetromino.clone();
+        temp_tetromino.current_state = next_state;
+
+        if !self.can_move(
+            &tetromino,
+            tetromino.position.row as i16,
+            tetromino.position.col as i16 - 1,
+        ) && !self.can_move(
+            &tetromino,
+            tetromino.position.row as i16,
+            tetromino.position.col as i16 + 1,
+        ) && !self.can_move(
+            &tetromino,
+            tetromino.position.row as i16 + 1,
+            tetromino.position.col as i16,
+        ) && !self.can_move(
+            &temp_tetromino,
+            tetromino.position.row as i16,
+            tetromino.position.col as i16,
+        ) {
+            return true;
         }
+
         false
     }
 
