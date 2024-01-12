@@ -51,8 +51,16 @@ jobs:
           cross: false
           jreleaser_platform: windows-x86_64
 
+    outputs:
+      version: ${{ steps.set-version.outputs.version }}
     steps:
     - uses: actions/checkout@v4
+
+    - name: Set VERSION param
+      if: matrix.build == 'x86_64-linux'
+      id: set-version
+      run: |
+        echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
     - name: Set VERSION env
       if: matrix.build != 'x86_64-windows'
@@ -64,18 +72,6 @@ jobs:
       run: |
         $env:VERSION = $env:GITHUB_REF_NAME.TrimStart('v')
         echo "VERSION=$env:VERSION" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-    - name: Update version in Cargo.toml
-      if: matrix.build == 'x86_64-linux'
-      run: |
-        cargo install cargo-edit
-        cargo-set-version set-version ${{ env.VERSION }}
-
-    - name: Publish
-      if: matrix.build == 'x86_64-linux'
-      run: |
-        cargo login ${{ secrets.CRATES_IO_API_TOKEN }}
-        cargo publish --target x86_64-unknown-linux-gnu --allow-dirty
 
     - name: Install ${{ matrix.rust }} toolchain
       uses: dtolnay/rust-toolchain@master
@@ -125,16 +121,12 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v3
 
-      - name: Set VERSION env
-        run: |
-          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-
       - name: Release
         uses: jreleaser/release-action@v2
         with:
           arguments: full-release -PartifactsDir=artifacts -PskipArchiveResolver
         env:
-          JRELEASER_PROJECT_VERSION: ${{ env.VERSION }}
+          JRELEASER_PROJECT_VERSION: ${{ needs.build.outputs.version }}
           JRELEASER_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           JRELEASER_CHOCOLATEY_API_KEY: ${{ secrets.CHOCO_API_KEY }}
 
@@ -146,3 +138,20 @@ jobs:
           path: |
             out/jreleaser/trace.log
             out/jreleaser/output.properties
+
+  publish:
+    needs: [ build, release ]
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Update version in Cargo.toml
+      run: |
+        cargo install cargo-edit
+        cargo-set-version set-version ${{ needs.build.outputs.version }}
+
+    - name: Publish
+      run: |
+        cargo login ${{ secrets.CRATES_IO_API_TOKEN }}
+        cargo publish --target x86_64-unknown-linux-gnu --allow-dirty -vv
