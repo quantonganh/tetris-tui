@@ -89,8 +89,10 @@ jobs:
       run: sudo apt-get install -y gcc-aarch64-linux-gnu
 
     - name: Build release binary
+      env:
+        VERSION: ${{ env.VERSION }}
       run: |
-        cargo build --release --locked --target ${{ matrix.target }}
+        cargo build --release --locked --target ${{ matrix.target }} -vv
 
     - name: jReleaser assemble
       uses: jreleaser/release-action@v2
