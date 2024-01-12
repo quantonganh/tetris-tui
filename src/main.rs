@@ -273,13 +273,7 @@ impl Game {
     fn render(&self, stdout: &mut std::io::Stdout) -> Result<()> {
         stdout.execute(Clear(ClearType::All))?;
 
-        for (y, row) in self.play_grid.iter().enumerate() {
-            for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + 1 + x * CELL_WIDTH;
-                let screen_y = self.start_y + 1 + y;
-                render_cell(stdout, screen_x, screen_y, cell.clone())?;
-            }
-        }
+        self.render_play_grid(stdout)?;
 
         render_frame(
             stdout,
@@ -359,13 +353,7 @@ impl Game {
     }
 
     fn render_changed_portions(&self, stdout: &mut std::io::Stdout) -> Result<()> {
-        for (y, row) in self.play_grid.iter().enumerate() {
-            for (x, &ref cell) in row.iter().enumerate() {
-                let screen_x = self.start_x + 1 + x * CELL_WIDTH;
-                let screen_y = self.start_y + 1 + y;
-                render_cell(stdout, screen_x, screen_y, cell.clone())?;
-            }
-        }
+        self.render_play_grid(stdout)?;
 
         // Clear the next component
         let next_start_x = self.start_x + PLAY_WIDTH * CELL_WIDTH + 1 + DISTANCE;
@@ -410,6 +398,18 @@ impl Game {
         Ok(())
     }
 
+    fn render_play_grid(&self, stdout: &mut std::io::Stdout) -> Result<()> {
+        for (y, row) in self.play_grid.iter().enumerate() {
+            for (x, &ref cell) in row.iter().enumerate() {
+                let screen_x = self.start_x + 1 + x * CELL_WIDTH;
+                let screen_y = self.start_y + 1 + y;
+                render_cell(stdout, screen_x, screen_y, cell.clone())?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn handle_event(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
         let mut drop_timer = Instant::now();
         let mut soft_drop_timer = Instant::now();
@@ -438,7 +438,7 @@ impl Game {
                                     self.play_grid.insert(PLAY_HEIGHT - 1, new_row.clone());
                                 }
 
-                                self.render_changed_portions(stdout)?;
+                                self.render_play_grid(stdout)?;
                             }
                             MessageType::Notification(msg) => {
                                 self.paused = !self.paused;
