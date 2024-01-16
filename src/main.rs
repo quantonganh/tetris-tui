@@ -168,26 +168,14 @@ struct Game {
 
 impl Game {
     fn new(
+        start_x: usize,
+        start_y: usize,
         conn: Connection,
         stream: Option<TcpStream>,
         receiver: Option<Receiver<MessageType>>,
         start_with_number_of_filled_lines: usize,
         start_at_level: usize,
     ) -> Result<Self> {
-        let (term_width, term_height) = terminal::size()?;
-        let grid_width = PLAY_WIDTH * CELL_WIDTH + 2;
-        let grid_height = PLAY_HEIGHT + 2;
-        let required_width = (STATS_WIDTH + 2 + DISTANCE) * 2 + PLAY_WIDTH * CELL_WIDTH + 2;
-        if term_width < required_width as u16 || term_height < grid_height as u16 {
-            eprintln!(
-                "The terminal is too small: {}x{}.\nRequired dimensions are  : {}x{}.",
-                term_width, term_height, required_width, grid_height
-            );
-            exit(1);
-        }
-        let start_x = (term_width as usize - grid_width) / 2;
-        let start_y = (term_height as usize - grid_height) / 2;
-
         let play_grid = create_grid(PLAY_WIDTH, PLAY_HEIGHT, start_with_number_of_filled_lines);
 
         let current_tetromino = Tetromino::new(false);
@@ -1537,6 +1525,21 @@ const PREFIX_CLEARED_ROWS: &str = "ClearedRows: ";
 const PREFIX_NOTIFICATION: &str = "Notification: ";
 
 fn main() -> Result<()> {
+    let (term_width, term_height) = terminal::size()?;
+    let play_width = PLAY_WIDTH * CELL_WIDTH + 2;
+    let required_width = (STATS_WIDTH + 2 + DISTANCE) * 2 + play_width;
+    let required_height = PLAY_HEIGHT + 2;
+    if term_width < required_width as u16 || term_height < required_height as u16 {
+        eprintln!(
+            "The terminal is too small: {}x{}.\nRequired dimensions are  : {}x{}.",
+            term_width, term_height, required_width, required_height
+        );
+        exit(1);
+    }
+
+    let start_x = (term_width as usize - play_width) / 2;
+    let start_y = (term_height as usize - required_height) / 2;
+
     let conn = open()?;
 
     let args = Args::parse();
@@ -1567,6 +1570,8 @@ fn main() -> Result<()> {
             let mut stream_clone = stream.try_clone()?;
             let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
             let mut game = Game::new(
+                start_x,
+                start_y,
                 conn,
                 Some(stream),
                 Some(receiver),
@@ -1586,6 +1591,8 @@ fn main() -> Result<()> {
                 let mut stream_clone = stream.try_clone()?;
                 let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
                 let mut game = Game::new(
+                    start_x,
+                    start_y,
                     conn,
                     Some(stream),
                     Some(receiver),
@@ -1602,6 +1609,8 @@ fn main() -> Result<()> {
         }
     } else {
         let mut game = Game::new(
+            start_x,
+            start_y,
             conn,
             None,
             None,
