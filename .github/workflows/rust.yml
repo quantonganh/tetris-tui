@@ -1,6 +1,9 @@
 name: Rust
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     tags: [ "*" ]
 
@@ -11,8 +14,22 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test --target x86_64-unknown-linux-gnu -- --nocapture
+
+  build:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
