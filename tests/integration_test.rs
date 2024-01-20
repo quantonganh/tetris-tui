@@ -7,7 +7,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 use tetris_tui::{
-    tetromino_width, Cell, Game, Position, SqliteHighScoreRepository, Terminal, Tetromino,
+    sqlite::HighScoreRepo, tetromino_width, Cell, Game, Position, Terminal, Tetromino,
     TetrominoSpawner, EMPTY_CELL, I_CELL, NEXT_WIDTH, PLAY_WIDTH,
 };
 
@@ -78,7 +78,7 @@ impl Terminal for MockTerminal {
 struct ITetromino;
 
 impl TetrominoSpawner for ITetromino {
-    fn spawn_tetromino(&self, is_next: bool) -> Tetromino {
+    fn spawn(&self, is_next: bool) -> Tetromino {
         let i_tetromino_states: Vec<Vec<Vec<Cell>>> = vec![
             vec![
                 vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
@@ -127,7 +127,7 @@ impl TetrominoSpawner for ITetromino {
 fn clear_lines() -> Result<()> {
     let tetromino_spawner = Box::new(ITetromino);
     let conn = Connection::open_in_memory()?;
-    let sqlite_highscore_repository = Box::new(SqliteHighScoreRepository { conn });
+    let sqlite_highscore_repository = Box::new(HighScoreRepo { conn });
 
     let (tx, rx): (Sender<KeyCode>, Receiver<KeyCode>) = channel();
     let (play_grid_tx, play_grid_rx): (Sender<Vec<Vec<Cell>>>, Receiver<Vec<Vec<Cell>>>) =

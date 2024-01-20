@@ -2,8 +2,11 @@ use core::fmt;
 use rand::Rng;
 use std::error::Error;
 use std::io::{self, Write};
+use std::net::{TcpListener, TcpStream};
+use std::result;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
-use std::{fs, result};
 
 use crossterm::{
     cursor::{self, MoveLeft, MoveRight, MoveTo, RestorePosition, SavePosition},
@@ -14,25 +17,131 @@ use crossterm::{
     ExecutableCommand,
 };
 
-use dirs;
-use rusqlite::{params, Connection, Result as RusqliteResult};
-use std::io::Read;
-use std::net::TcpStream;
-use std::sync::mpsc::{Receiver, Sender};
-
 use clap::Parser;
+use local_ip_address::local_ip;
+
+use multiplayer::MessageType;
+use sqlite::HighScoreRepo;
+
+mod multiplayer;
+pub mod sqlite;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct Args {
+    #[arg(short, long, default_value_t = false)]
+    multiplayer: bool,
+
+    #[arg(short, long)]
+    server_address: Option<String>,
+
+    /// The number of lines already filled
+    #[arg(short, long, default_value_t = 0, verbatim_doc_comment)]
+    pub number_of_lines_already_filled: usize,
+
+    /// Start at level
+    #[arg(short, long, default_value_t = 0, verbatim_doc_comment)]
+    pub level: usize,
+}
+
+pub fn start(args: &Args, term_width: u16, term_height: u16) -> Result<()> {
+    let start_x = (term_width as usize - PLAY_WIDTH * CELL_WIDTH - 2) / 2;
+    let start_y = (term_height as usize - PLAY_HEIGHT - 2) / 2;
+
+    let terminal = Box::new(RealTerminal);
+    let tetromino_spawner = Box::new(RandomTetromino);
+
+    let conn = sqlite::open()?;
+    let sqlite_highscore_repo = Box::new(HighScoreRepo { conn });
+
+    if args.multiplayer {
+        if args.server_address == None {
+            let listener = TcpListener::bind("0.0.0.0:8080")?;
+            let my_local_ip = local_ip()?;
+            println!(
+                "Server started. Please invite your competitor to connect to {}.",
+                format!("{}:8080", my_local_ip)
+            );
+
+            let (stream, _) = listener.accept()?;
+            println!("Player 2 connected.");
+
+            let mut stream_clone = stream.try_clone()?;
+            let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
+            let mut game = Game::new(
+                terminal,
+                tetromino_spawner,
+                sqlite_highscore_repo,
+                start_x,
+                start_y,
+                args.number_of_lines_already_filled,
+                args.level,
+                Some(stream),
+                Some(receiver),
+                None,
+            )?;
+
+            thread::spawn(move || {
+                multiplayer::forward_to_main_thread(&mut stream_clone, sender);
+            });
+
+            game.start()?;
+        } else {
+            if let Some(server_address) = &args.server_address {
+                let stream = TcpStream::connect(server_address)?;
+
+                let mut stream_clone = stream.try_clone()?;
+                let (sender, receiver): (Sender<MessageType>, Receiver<MessageType>) = channel();
+                let mut game = Game::new(
+                    terminal,
+                    tetromino_spawner,
+                    sqlite_highscore_repo,
+                    start_x,
+                    start_y,
+                    args.number_of_lines_already_filled,
+                    args.level,
+                    Some(stream),
+                    Some(receiver),
+                    None,
+                )?;
+
+                thread::spawn(move || {
+                    multiplayer::forward_to_main_thread(&mut stream_clone, sender);
+                });
+
+                game.start()?;
+            }
+        }
+    } else {
+        let mut game = Game::new(
+            terminal,
+            tetromino_spawner,
+            sqlite_highscore_repo,
+            start_x,
+            start_y,
+            args.number_of_lines_already_filled,
+            args.level,
+            None,
+            None,
+            None,
+        )?;
+        game.start()?;
+    }
+
+    Ok(())
+}
 
 pub const PLAY_WIDTH: usize = 10;
-const PLAY_HEIGHT: usize = 20;
+pub const PLAY_HEIGHT: usize = 20;
 
-const DISTANCE: usize = 6;
+pub const DISTANCE: usize = 6;
 
 pub const NEXT_WIDTH: usize = 6;
 const NEXT_HEIGHT: usize = 5;
 
-const STATS_WIDTH: usize = 18;
+pub const STATS_WIDTH: usize = 18;
 
-const MAX_LEVEL: usize = 20;
+pub const MAX_LEVEL: usize = 20;
 const LINES_PER_LEVEL: usize = 20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,7 +152,7 @@ pub struct Cell {
 
 const SPACE: &str = "   ";
 const SQUARE_BRACKETS: &str = "[ ]";
-const CELL_WIDTH: usize = 3;
+pub const CELL_WIDTH: usize = 3;
 
 pub const EMPTY_CELL: Cell = Cell {
     symbols: SPACE,
@@ -117,8 +226,8 @@ impl Clone for Tetromino {
 }
 
 pub struct Player {
-    name: String,
-    score: u64,
+    pub name: String,
+    pub score: u64,
 }
 
 const ENTER_YOUR_NAME_MESSAGE: &str = "Enter your name: ";
@@ -138,88 +247,19 @@ impl fmt::Display for GameError {
 
 impl Error for GameError {}
 
-type Result<T> = result::Result<T, Box<dyn Error>>;
+pub type Result<T> = result::Result<T, Box<dyn Error>>;
 
 struct MultiplayerScore {
     my_score: u8,
     competitor_score: u8,
 }
 
-pub trait HighScoreRepository {
+pub trait HighScore {
     fn create_table(&self) -> Result<()>;
     fn count(&self) -> Result<i64>;
     fn get_player_at_rank(&self, rank: usize) -> Result<Player>;
     fn get_top_players(&self) -> Result<Vec<Player>>;
     fn insert(&mut self, name: &str, score: usize) -> Result<()>;
-}
-
-pub struct SqliteHighScoreRepository {
-    pub conn: Connection,
-}
-
-impl HighScoreRepository for SqliteHighScoreRepository {
-    fn create_table(&self) -> Result<()> {
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS high_scores (
-                id INTEGER PRIMARY KEY,
-                player_name TEXT,
-                score INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )",
-            params![],
-        )?;
-        Ok(())
-    }
-
-    fn count(&self) -> Result<i64> {
-        let count: i64 =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM high_scores", params![], |row| {
-                    row.get(0)
-                })?;
-
-        Ok(count)
-    }
-
-    fn get_player_at_rank(&self, rank: usize) -> Result<Player> {
-        let player: Player = self.conn.query_row(
-            "SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT ?1,1",
-            params![rank as u32 - 1],
-            |row| {
-                Ok(Player {
-                    name: row.get(0)?,
-                    score: row.get(1)?,
-                })
-            },
-        )?;
-
-        Ok(player)
-    }
-
-    fn get_top_players(&self) -> Result<Vec<Player>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT player_name, score FROM high_scores ORDER BY score DESC LIMIT 5")?;
-        let rows = stmt.query_map(params![], |row| {
-            Ok(Player {
-                name: row.get(0)?,
-                score: row.get(1)?,
-            })
-        })?;
-        let players: Result<Vec<Player>> = rows
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|err| err.into());
-        players
-    }
-
-    fn insert(&mut self, name: &str, score: usize) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO high_scores (player_name, score) VALUES (?1, ?2)",
-            params![name, score],
-        )?;
-
-        Ok(())
-    }
 }
 
 pub trait Terminal {
@@ -288,13 +328,13 @@ impl Terminal for RealTerminal {
 }
 
 pub trait TetrominoSpawner {
-    fn spawn_tetromino(&self, is_next: bool) -> Tetromino;
+    fn spawn(&self, is_next: bool) -> Tetromino;
 }
 
 pub struct RandomTetromino;
 
 impl TetrominoSpawner for RandomTetromino {
-    fn spawn_tetromino(&self, is_next: bool) -> Tetromino {
+    fn spawn(&self, is_next: bool) -> Tetromino {
         let i_tetromino_states: Vec<Vec<Vec<Cell>>> = vec![
             vec![
                 vec![EMPTY_CELL, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL],
@@ -474,7 +514,7 @@ impl TetrominoSpawner for RandomTetromino {
 pub struct Game {
     terminal: Box<dyn Terminal + Send>,
     tetromino_spawner: Box<dyn TetrominoSpawner + Send>,
-    highscore_repository: Box<dyn HighScoreRepository + Send>,
+    highscore_repo: Box<dyn HighScore + Send>,
     play_grid: Vec<Vec<Cell>>,
     pub current_tetromino: Tetromino,
     next_tetromino: Tetromino,
@@ -498,7 +538,7 @@ impl Game {
     pub fn new(
         terminal: Box<dyn Terminal + Send>,
         tetromino_spawner: Box<dyn TetrominoSpawner + Send>,
-        sqlite_highscore_repository: Box<dyn HighScoreRepository + Send>,
+        sqlite_highscore_repo: Box<dyn HighScore + Send>,
         start_x: usize,
         start_y: usize,
         start_with_number_of_filled_lines: usize,
@@ -509,20 +549,20 @@ impl Game {
     ) -> Result<Self> {
         let play_grid = create_grid(PLAY_WIDTH, PLAY_HEIGHT, start_with_number_of_filled_lines);
 
-        let current_tetromino = tetromino_spawner.spawn_tetromino(false);
-        let next_tetromino = tetromino_spawner.spawn_tetromino(true);
+        let current_tetromino = tetromino_spawner.spawn(false);
+        let next_tetromino = tetromino_spawner.spawn(true);
 
         let mut drop_interval: u64 = DEFAULT_INTERVAL;
         for _i in 1..=start_at_level {
             drop_interval -= drop_interval / 10;
         }
 
-        sqlite_highscore_repository.create_table()?;
+        sqlite_highscore_repo.create_table()?;
 
         Ok(Game {
             terminal,
             tetromino_spawner,
-            highscore_repository: sqlite_highscore_repository,
+            highscore_repo: sqlite_highscore_repo,
             play_grid,
             current_tetromino,
             next_tetromino,
@@ -569,8 +609,8 @@ impl Game {
         );
 
         // Reset tetrominos
-        self.current_tetromino = self.tetromino_spawner.spawn_tetromino(false);
-        self.next_tetromino = self.tetromino_spawner.spawn_tetromino(true);
+        self.current_tetromino = self.tetromino_spawner.spawn(false);
+        self.next_tetromino = self.tetromino_spawner.spawn(true);
 
         // Reset game statistics
         self.lines = 0;
@@ -1210,7 +1250,7 @@ impl Game {
             (PLAY_WIDTH - tetromino_width(&self.current_tetromino.states[0])) as isize / 2;
         self.render_current_tetromino()?;
 
-        self.next_tetromino = self.tetromino_spawner.spawn_tetromino(true);
+        self.next_tetromino = self.tetromino_spawner.spawn(true);
         self.render_next_tetromino()?;
 
         Ok(())
@@ -1255,7 +1295,10 @@ impl Game {
 
         if let Some(stream) = &mut self.stream {
             if num_filled_rows > 0 {
-                send_message(stream, MessageType::ClearedRows(num_filled_rows));
+                multiplayer::send_to_other_player(
+                    stream,
+                    MessageType::ClearedRows(num_filled_rows),
+                );
             }
         }
 
@@ -1365,7 +1408,10 @@ impl Game {
 
     fn handle_game_over(&mut self, stdout: &mut io::Stdout) -> Result<()> {
         if let Some(stream) = &mut self.stream {
-            send_message(stream, MessageType::Notification("YOU WIN!".to_string()));
+            multiplayer::send_to_other_player(
+                stream,
+                MessageType::Notification("YOU WIN!".to_string()),
+            );
             self.multiplayer_score.competitor_score += 1;
 
             let stats_start_x = self.start_x - STATS_WIDTH - DISTANCE - 1;
@@ -1386,12 +1432,12 @@ impl Game {
         if self.score == 0 {
             self.show_high_scores(stdout)?;
         } else {
-            let count: i64 = self.highscore_repository.count()?;
+            let count: i64 = self.highscore_repo.count()?;
 
             if count < 5 {
                 self.new_high_score(stdout)?;
             } else {
-                let player: Player = self.highscore_repository.get_player_at_rank(5)?;
+                let player: Player = self.highscore_repo.get_player_at_rank(5)?;
 
                 if (self.score as u64) <= player.score {
                     self.show_high_scores(stdout)?;
@@ -1407,7 +1453,7 @@ impl Game {
     fn show_high_scores(&mut self, stdout: &mut io::Stdout) -> Result<()> {
         let mut players_str: Vec<String> = Vec::new();
         {
-            let players = self.highscore_repository.get_top_players()?;
+            let players = self.highscore_repo.get_top_players()?;
             for player in players.iter() {
                 let formatted_str = format!(
                     "{:<width$}{:>9}",
@@ -1528,7 +1574,7 @@ impl Game {
                                     }
                                 }
                                 KeyCode::Enter => {
-                                    self.highscore_repository.insert(&name, self.score)?;
+                                    self.highscore_repo.insert(&name, self.score)?;
 
                                     execute!(stdout.lock(), cursor::Hide)?;
                                     self.show_high_scores(stdout)?;
@@ -1744,54 +1790,6 @@ pub fn tetromino_width(tetromino: &Vec<Vec<Cell>>) -> usize {
     width
 }
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    #[arg(short, long, default_value_t = false)]
-    multiplayer: bool,
-
-    #[arg(short, long)]
-    server_address: Option<String>,
-
-    /// The number of lines already filled
-    #[arg(short, long, default_value_t = 0, verbatim_doc_comment)]
-    number_of_lines_already_filled: usize,
-
-    /// Start at level
-    #[arg(short, long, default_value_t = 0, verbatim_doc_comment)]
-    level: usize,
-}
-
-pub enum MessageType {
-    ClearedRows(usize),
-    Notification(String),
-}
-
-const PREFIX_CLEARED_ROWS: &str = "ClearedRows: ";
-const PREFIX_NOTIFICATION: &str = "Notification: ";
-
-pub fn open() -> RusqliteResult<Connection, Box<dyn Error>> {
-    let home_dir = match dirs::home_dir() {
-        Some(path) => path,
-        None => {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to get the user's home directory.",
-            )));
-        }
-    };
-
-    let db_dir = home_dir.join(".tetris");
-    if let Err(err) = fs::create_dir_all(db_dir.clone()) {
-        return Err(Box::new(err));
-    }
-
-    let db_path = db_dir.join("high_scores.db");
-    let conn = Connection::open(&db_path)?;
-
-    Ok(conn)
-}
-
 const MARGIN: usize = CELL_WIDTH;
 
 fn find_longest_message_length(messages: &[&str]) -> usize {
@@ -1816,41 +1814,4 @@ fn find_longest_key_value_length(messages: &Vec<&str>) -> (usize, usize) {
     }
 
     (longest_key_length, longest_value_length)
-}
-
-fn send_message(stream: &mut TcpStream, message: MessageType) {
-    let message_string = match message {
-        MessageType::ClearedRows(rows) => format!("{}{}", PREFIX_CLEARED_ROWS, rows),
-        MessageType::Notification(msg) => format!("{}{}", PREFIX_NOTIFICATION, msg),
-    };
-
-    if let Err(err) = stream.write_all(message_string.as_bytes()) {
-        eprintln!("Error writing message: {}", err);
-    }
-}
-
-pub fn receive_message(stream: &mut TcpStream, sender: Sender<MessageType>) {
-    let mut buffer = [0u8; 256];
-    loop {
-        match stream.read(&mut buffer) {
-            Ok(n) if n > 0 => {
-                let msg = String::from_utf8_lossy(&buffer[0..n]);
-                if msg.starts_with(PREFIX_CLEARED_ROWS) {
-                    if let Ok(rows) = msg.trim_start_matches(PREFIX_CLEARED_ROWS).parse() {
-                        if let Err(err) = sender.send(MessageType::ClearedRows(rows)) {
-                            eprintln!("Error sending number of cleared rows: {}", err)
-                        }
-                    }
-                } else if msg.starts_with(PREFIX_NOTIFICATION) {
-                    let msg = msg.trim_start_matches(PREFIX_NOTIFICATION).to_string();
-                    if let Err(err) = sender.send(MessageType::Notification(msg)) {
-                        eprintln!("Error sending notification message: {}", err)
-                    }
-                }
-            }
-            Ok(_) | Err(_) => {
-                break;
-            }
-        }
-    }
 }
